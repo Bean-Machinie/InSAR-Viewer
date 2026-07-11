@@ -1,5 +1,6 @@
 import type {
   ColorBy,
+  GridResponse,
   ProjectDetail,
   ProjectSummary,
   RasterResponse,
@@ -43,6 +44,10 @@ export const api = {
 
   projectDetail: (id: string) =>
     getJSON<ProjectDetail>(`/api/projects/${encodeURIComponent(id)}`),
+
+  /** All valid cells (columnar) + axes; fetched once, filtered client-side. */
+  grid: (id: string) =>
+    getJSON<GridResponse>(`/api/projects/${encodeURIComponent(id)}/grid`),
 
   /** Filtered grid rendered server-side as a georeferenced PNG. */
   raster: (

@@ -445,6 +445,30 @@ def raster(
     }
 
 
+@app.get("/api/projects/{project_id}/grid")
+def grid(project_id: str) -> dict:
+    """All valid (non-NaN) cells, columnar, plus the coordinate axes.
+
+    The frontend renders each cell as an exact projected rectangle and
+    filters/colors client-side, so this is fetched once per project.
+    """
+    proj = store.get(project_id)
+    mask = np.isfinite(proj.vel) & np.isfinite(proj.coh) & np.isfinite(proj.rmse)
+    ii, jj = np.nonzero(mask)
+    return {
+        "lat": np.round(proj.lat, 8).tolist(),
+        "lon": np.round(proj.lon, 8).tolist(),
+        "count": int(ii.size),
+        "cells": {
+            "i": ii.tolist(),
+            "j": jj.tolist(),
+            "vel": np.round(proj.vel[ii, jj].astype(np.float64), 2).tolist(),
+            "coh": np.round(proj.coh[ii, jj].astype(np.float64), 3).tolist(),
+            "rmse": np.round(proj.rmse[ii, jj].astype(np.float64), 2).tolist(),
+        },
+    }
+
+
 @app.get("/api/projects/{project_id}")
 def project_detail(project_id: str) -> dict:
     proj = store.get(project_id)

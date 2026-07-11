@@ -23,7 +23,7 @@ interface Props {
   clipPct: number;
   onClipPct: (v: number) => void;
   pixelCount: number | null;
-  rasterLoading: boolean;
+  gridLoading: boolean;
 }
 
 function orbitLabel(o?: string | null): string {
@@ -202,8 +202,8 @@ export default function SidePanel(p: Props) {
             />
           </label>
           <div className="count-row">
-            {p.rasterLoading ? (
-              "Rendering…"
+            {p.gridLoading ? (
+              "Loading…"
             ) : p.pixelCount !== null ? (
               <>
                 <b>{p.pixelCount.toLocaleString()}</b> pixels shown

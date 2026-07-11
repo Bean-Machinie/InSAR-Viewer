@@ -1,15 +1,8 @@
 import { useEffect } from "react";
-import {
-  CircleMarker,
-  ImageOverlay,
-  LayersControl,
-  MapContainer,
-  TileLayer,
-  useMap,
-  useMapEvents,
-} from "react-leaflet";
-import type { Bounds, ColorBy, RasterResponse } from "../api/types";
+import { LayersControl, MapContainer, TileLayer, useMap } from "react-leaflet";
+import type { Bounds, ColorBy, GridResponse } from "../api/types";
 import type { Domain } from "../lib/stats";
+import GridLayer from "./GridLayer";
 import Legend from "./Legend";
 
 const ESRI_URL =
@@ -35,35 +28,30 @@ function FitBounds({ bounds }: { bounds: Bounds | null }) {
   return null;
 }
 
-function ClickCatcher({ onClick }: { onClick: (lat: number, lon: number) => void }) {
-  useMapEvents({
-    click(e) {
-      onClick(e.latlng.lat, e.latlng.lng);
-    },
-  });
-  return null;
-}
-
 interface Props {
   bounds: Bounds | null;
-  raster: RasterResponse | null;
+  grid: GridResponse | null;
+  visibleIdx: number[];
+  colorOf: (cellIdx: number) => string;
   colorBy: ColorBy;
   domain: Domain;
-  selected: { lat: number; lon: number } | null;
-  onMapClick: (lat: number, lon: number) => void;
+  selected: { i: number; j: number } | null;
+  onPickCell: (cellIdx: number) => void;
   overlayMessage: string | null;
-  rasterLoading: boolean;
+  gridLoading: boolean;
 }
 
 export default function MapView({
   bounds,
-  raster,
+  grid,
+  visibleIdx,
+  colorOf,
   colorBy,
   domain,
   selected,
-  onMapClick,
+  onPickCell,
   overlayMessage,
-  rasterLoading,
+  gridLoading,
 }: Props) {
   return (
     <div className="map-wrap">
@@ -77,28 +65,18 @@ export default function MapView({
           </LayersControl.BaseLayer>
         </LayersControl>
         <FitBounds bounds={bounds} />
-        <ClickCatcher onClick={onMapClick} />
-        {raster && (
-          <ImageOverlay
-            url={`data:image/png;base64,${raster.image_base64}`}
-            bounds={[
-              [raster.bounds.lat_min, raster.bounds.lon_min],
-              [raster.bounds.lat_max, raster.bounds.lon_max],
-            ]}
-            opacity={0.9}
-            className="raster-overlay"
-          />
-        )}
-        {selected && (
-          <CircleMarker
-            center={[selected.lat, selected.lon]}
-            radius={8}
-            pathOptions={{ color: "#ffffff", weight: 2, fillOpacity: 0 }}
-          />
-        )}
+        <GridLayer
+          grid={grid}
+          visibleIdx={visibleIdx}
+          colorOf={colorOf}
+          selected={selected}
+          onPickCell={onPickCell}
+        />
       </MapContainer>
-      {raster && raster.count > 0 && <Legend colorBy={colorBy} domain={domain} />}
-      {rasterLoading && <div className="map-loading">Rendering layer…</div>}
+      {grid !== null && visibleIdx.length > 0 && (
+        <Legend colorBy={colorBy} domain={domain} />
+      )}
+      {gridLoading && <div className="map-loading">Loading grid…</div>}
       {overlayMessage && (
         <div className="map-overlay-message">{overlayMessage}</div>
       )}

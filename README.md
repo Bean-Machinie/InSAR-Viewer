@@ -13,17 +13,18 @@ click-to-timeseries.
   different analyses side by side
 - Project browser: also scans a results root directory and lists valid results
   folders, with run metadata (date range, orbit, preset, resolution)
-- True pixel-footprint rendering: the backend rasterizes the filtered grid to
-  a transparent PNG that Leaflet drapes at its exact geographic extent — every
-  data pixel occupies its real ground footprint at every zoom level (no
-  overlapping markers). Diverging red–white–blue for velocity symmetric around
-  0 (red = subsidence-like, blue = uplift-like), sequential colormaps for
+- True pixel-footprint rendering: every data cell is drawn as an exact
+  projected rectangle between its real NetCDF cell edges, recomputed on each
+  pan/zoom — cells never smear, elongate, or drift, at any zoom level.
+  Diverging red–white–blue for velocity symmetric around 0
+  (red = subsidence-like, blue = uplift-like), sequential colormaps for
   coherence/RMSE, percentile clip control, legend, auto-fit to data bounds
 - Quality filtering: min-coherence and max-RMSE sliders with live pixel count
-  (debounced raster re-render)
-- Click anywhere on the data → nearest-pixel displacement time series with
-  linear trend overlay and `velocity ± RMSE mm/yr` in the header; clicks on
-  NaN/filtered pixels are ignored; NaN epochs handled
+  — instant, filtering happens client-side on the loaded grid
+- Click any cell → that exact pixel gets a rectangle highlight and its
+  displacement time series opens, with linear trend overlay and
+  `velocity ± RMSE mm/yr` in the header; clicks on NaN/filtered cells are
+  ignored; NaN epochs handled
 - Close any project with the ✕ on its card
 
 ## Prerequisites
@@ -98,8 +99,9 @@ is generated automatically.
 | `POST /api/projects/open-dialog` | Open a native folder picker and register the chosen folder |
 | `GET /api/projects/{id}` | Full summary, grid info, bounds, validation warnings |
 | `DELETE /api/projects/{id}` | Close a project (unregister UI-loaded / hide scanned) |
-| `GET /api/projects/{id}/raster?layer=&coh_min=&rmse_max=&vmin=&vmax=&clip_pct=` | Filtered grid as base64 PNG + half-cell-padded geographic bounds + applied vmin/vmax |
-| `GET /api/projects/{id}/points?coh_min=&rmse_max=` | Filtered non-NaN pixels as JSON points (legacy; the UI now uses `/raster`) |
+| `GET /api/projects/{id}/grid` | All valid cells (columnar `i/j/vel/coh/rmse`) + coordinate axes — what the UI renders |
+| `GET /api/projects/{id}/raster?layer=&coh_min=&rmse_max=&vmin=&vmax=&clip_pct=` | Filtered grid as base64 PNG + half-cell-padded bounds (kept for export/embedding) |
+| `GET /api/projects/{id}/points?coh_min=&rmse_max=` | Filtered non-NaN pixels as JSON points (legacy) |
 | `GET /api/projects/{id}/timeseries?lat=&lon=` | Nearest-neighbour displacement series + linear trend + pixel stats |
 | `GET /api/projects/{id}/metadata` | Raw `run_metadata.json` |
 
@@ -122,13 +124,17 @@ src/
 
 ## Notes
 
-- The data layer is a single server-rendered PNG in a Leaflet `ImageOverlay`
-  (`image-rendering: pixelated`, so pixels stay crisp when zoomed in). Bounds
-  are derived from the NetCDF coordinates: extent padded by half a cell, cells
-  centred on their coordinates; ascending and descending lat both handled
-  (image is always north-up).
-- Slider/colormap changes re-request the raster, debounced (300 ms), with
-  stale-response protection.
+- The data layer is a canvas that draws each cell as a rectangle between its
+  projected cell-edge coordinates (midpoints between NetCDF cell centres,
+  ends extrapolated by half a step). Edges are computed once per redraw and
+  shared between neighbouring cells, so cell borders are always consistent —
+  no CSS image scaling, no nearest-neighbour aliasing. Ascending and
+  descending lat both handled.
+- The grid is fetched once per project; sliders, colormap switches, and the
+  percentile clip are all applied client-side and update instantly.
+- Clicks resolve directly to a cell index from the coordinate axes, so the
+  highlighted pixel, the time-series lookup, and the rendered rectangle always
+  refer to the same cell.
 - 2D layers are loaded eagerly and cached in memory per project; the
   displacement cube is opened lazily and only sliced per clicked pixel.
 - Out of scope for this draft: authentication, uploads, multi-project

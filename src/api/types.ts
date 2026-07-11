@@ -29,6 +29,19 @@ export interface ProjectDetail extends ProjectSummary {
   bounds: Bounds;
 }
 
+export interface GridResponse {
+  lat: number[];
+  lon: number[];
+  count: number;
+  cells: {
+    i: number[];
+    j: number[];
+    vel: number[];
+    coh: number[];
+    rmse: number[];
+  };
+}
+
 export interface RasterResponse {
   image_base64: string;
   bounds: Bounds;

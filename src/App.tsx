@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api/client";
 import type {
   ColorBy,
+  GridResponse,
   ProjectDetail,
   ProjectSummary,
-  RasterResponse,
   TimeseriesResponse,
 } from "./api/types";
+import { colorFor } from "./lib/colormaps";
+import { computeDomain } from "./lib/stats";
 import MapView from "./components/MapView";
 import SidePanel from "./components/SidePanel";
 import TimeSeriesPanel from "./components/TimeSeriesPanel";
@@ -23,10 +25,10 @@ export default function App() {
   const [openBusy, setOpenBusy] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
 
-  // Raster layer + filters
-  const [raster, setRaster] = useState<RasterResponse | null>(null);
-  const [rasterLoading, setRasterLoading] = useState(false);
-  const [rasterError, setRasterError] = useState<string | null>(null);
+  // Grid data (fetched once per project; filtered/colored client-side)
+  const [grid, setGrid] = useState<GridResponse | null>(null);
+  const [gridLoading, setGridLoading] = useState(false);
+  const [gridError, setGridError] = useState<string | null>(null);
   const [cohMin, setCohMin] = useState(0.3);
   const [rmseMax, setRmseMax] = useState(10);
 
@@ -34,16 +36,14 @@ export default function App() {
   const [colorBy, setColorBy] = useState<ColorBy>("vel");
   const [clipPct, setClipPct] = useState(98);
 
-  // Time series
+  // Selection + time series
+  const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(
+    null,
+  );
   const [ts, setTs] = useState<TimeseriesResponse | null>(null);
   const [tsLoading, setTsLoading] = useState(false);
   const [tsError, setTsError] = useState<string | null>(null);
   const [tsOpen, setTsOpen] = useState(false);
-
-  const fetchSeq = useRef(0);
-  // Latest filters, readable from stable callbacks without re-binding
-  const filtersRef = useRef({ cohMin, rmseMax });
-  filtersRef.current = { cohMin, rmseMax };
 
   // Retry for a while on startup: the API server often boots slower than
   // vite, so the first fetch can hit a dead port.
@@ -77,46 +77,41 @@ export default function App() {
     };
   }, []);
 
-  const selectProject = useCallback((id: string) => {
-    setSelectedId(id);
-    setDetail(null);
-    setDetailLoading(true);
-    setRaster(null);
-    setRasterError(null);
+  const clearSelection = useCallback(() => {
+    setSelectedCell(null);
     setTs(null);
     setTsOpen(false);
-    api
-      .projectDetail(id)
-      .then(setDetail)
-      .catch((e: Error) => setRasterError(e.message))
-      .finally(() => setDetailLoading(false));
+    setTsError(null);
   }, []);
 
-  // Fetch the rendered raster whenever project / filters / display change.
-  // Debounced so slider drags don't spam the API; stale responses dropped.
-  useEffect(() => {
-    if (!selectedId) return;
-    const seq = ++fetchSeq.current;
-    setRasterLoading(true);
-    const t = setTimeout(() => {
+  const selectProject = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      setDetail(null);
+      setDetailLoading(true);
+      setGrid(null);
+      setGridError(null);
+      setGridLoading(true);
+      clearSelection();
       api
-        .raster(selectedId, colorBy, cohMin, rmseMax, clipPct)
-        .then((r) => {
-          if (seq !== fetchSeq.current) return;
-          setRaster(r);
-          setRasterError(null);
+        .projectDetail(id)
+        .then(setDetail)
+        .catch((e: Error) => setGridError(e.message))
+        .finally(() => setDetailLoading(false));
+      api
+        .grid(id)
+        .then((g) => {
+          setGrid(g);
+          setGridError(null);
         })
         .catch((e: Error) => {
-          if (seq !== fetchSeq.current) return;
-          setRasterError(e.message);
-          setRaster(null);
+          setGridError(e.message);
+          setGrid(null);
         })
-        .finally(() => {
-          if (seq === fetchSeq.current) setRasterLoading(false);
-        });
-    }, 300);
-    return () => clearTimeout(t);
-  }, [selectedId, colorBy, cohMin, rmseMax, clipPct]);
+        .finally(() => setGridLoading(false));
+    },
+    [clearSelection],
+  );
 
   // Load any results folder from disk: native picker (no arg) or pasted path
   const openFolder = useCallback(
@@ -150,69 +145,73 @@ export default function App() {
           if (selectedId === id) {
             setSelectedId(null);
             setDetail(null);
-            setRaster(null);
-            setRasterError(null);
-            setTs(null);
-            setTsOpen(false);
+            setGrid(null);
+            setGridError(null);
+            clearSelection();
           }
         })
         .catch((e: Error) => setOpenError(e.message));
     },
-    [selectedId],
+    [selectedId, clearSelection],
   );
 
-  // Map click → nearest-pixel time series. Ignores clicks outside the data
-  // extent and pixels that are NaN or excluded by the current filters.
-  const onMapClick = useCallback(
-    (lat: number, lon: number) => {
-      if (!selectedId || !raster) return;
-      const b = raster.bounds;
-      if (lat < b.lat_min || lat > b.lat_max || lon < b.lon_min || lon > b.lon_max)
-        return;
+  // Client-side filtering: instant sliders, no re-fetch
+  const visibleIdx = useMemo(() => {
+    if (!grid) return [];
+    const { coh, rmse } = grid.cells;
+    const out: number[] = [];
+    for (let k = 0; k < coh.length; k++) {
+      if (coh[k] >= cohMin && rmse[k] <= rmseMax) out.push(k);
+    }
+    return out;
+  }, [grid, cohMin, rmseMax]);
+
+  const domain = useMemo(() => {
+    if (!grid) return { min: -1, max: 1 };
+    const vals = grid.cells[colorBy];
+    const values = visibleIdx.map((k) => vals[k]);
+    return computeDomain(values, colorBy === "vel", clipPct);
+  }, [grid, visibleIdx, colorBy, clipPct]);
+
+  const colorOf = useMemo(() => {
+    if (!grid) return () => "#000";
+    const vals = grid.cells[colorBy];
+    return (k: number) => colorFor(vals[k], domain, colorBy);
+  }, [grid, colorBy, domain]);
+
+  // Exact-cell click → time series at that cell's centre coordinates
+  const onPickCell = useCallback(
+    (k: number) => {
+      if (!selectedId || !grid) return;
+      const i = grid.cells.i[k];
+      const j = grid.cells.j[k];
+      setSelectedCell({ i, j });
       setTsLoading(true);
       setTsError(null);
+      setTsOpen(true);
       api
-        .timeseries(selectedId, lat, lon)
+        .timeseries(selectedId, grid.lat[i], grid.lon[j])
         .then((r) => {
-          const { cohMin: c, rmseMax: m } = filtersRef.current;
-          const filteredOut =
-            r.velocity === null ||
-            r.coherence === null ||
-            r.rmse === null ||
-            r.coherence < c ||
-            r.rmse > m;
-          if (filteredOut) {
-            setTsLoading(false);
-            return; // NaN / filtered pixel — ignore the click
-          }
           setTs(r);
-          setTsOpen(true);
-          setTsLoading(false);
+          setTsError(null);
         })
-        .catch((e: Error) => {
-          setTsError(e.message);
-          setTsOpen(true);
-          setTsLoading(false);
-        });
+        .catch((e: Error) => setTsError(e.message))
+        .finally(() => setTsLoading(false));
     },
-    [selectedId, raster],
+    [selectedId, grid],
   );
 
   const overlayMessage = !selectedId
     ? projects.length > 0
       ? "Select a project to load results"
       : null
-    : rasterError
-      ? `Could not render layer: ${rasterError}`
-      : !rasterLoading && raster !== null && raster.count === 0
-        ? "No pixels pass the current filters — relax coherence/RMSE"
-        : null;
-
-  const domain = raster
-    ? { min: raster.vmin, max: raster.vmax }
-    : { min: -1, max: 1 };
-
-  const selectedLatLon = ts ? { lat: ts.lat, lon: ts.lon } : null;
+    : gridError
+      ? `Could not load grid: ${gridError}`
+      : !gridLoading && grid !== null && grid.count === 0
+        ? "This project has no valid (non-NaN) pixels"
+        : !gridLoading && grid !== null && visibleIdx.length === 0
+          ? "No pixels pass the current filters — relax coherence/RMSE"
+          : null;
 
   return (
     <div className="app">
@@ -237,29 +236,28 @@ export default function App() {
         onColorBy={setColorBy}
         clipPct={clipPct}
         onClipPct={setClipPct}
-        pixelCount={raster ? raster.count : null}
-        rasterLoading={rasterLoading}
+        pixelCount={grid ? visibleIdx.length : null}
+        gridLoading={gridLoading}
       />
       <main className="main">
         <MapView
           bounds={detail?.bounds ?? null}
-          raster={raster}
+          grid={grid}
+          visibleIdx={visibleIdx}
+          colorOf={colorOf}
           colorBy={colorBy}
           domain={domain}
-          selected={selectedLatLon}
-          onMapClick={onMapClick}
+          selected={selectedCell}
+          onPickCell={onPickCell}
           overlayMessage={overlayMessage}
-          rasterLoading={rasterLoading}
+          gridLoading={gridLoading}
         />
         {tsOpen && (
           <TimeSeriesPanel
             data={ts}
             loading={tsLoading}
             error={tsError}
-            onClose={() => {
-              setTsOpen(false);
-              setTs(null);
-            }}
+            onClose={clearSelection}
           />
         )}
       </main>
