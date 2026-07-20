@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { ColorBy, ProjectDetail, ProjectSummary } from "../api/types";
+import type { ProjectDetail, ProjectSummary } from "../api/types";
 
 interface Props {
   projects: ProjectSummary[];
@@ -15,10 +15,6 @@ interface Props {
   openError: string | null;
   cohMin: number;
   onCohMin: (v: number) => void;
-  colorBy: ColorBy;
-  onColorBy: (v: ColorBy) => void;
-  clipPct: number;
-  onClipPct: (v: number) => void;
   pixelCount: number | null;
   gridLoading: boolean;
 }
@@ -34,12 +30,6 @@ function fmtDate(d?: string | null): string {
   const s = d.replace(/-/g, "");
   return s.length === 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : d;
 }
-
-const COLOR_OPTIONS: { key: ColorBy; label: string }[] = [
-  { key: "vel", label: "Velocity" },
-  { key: "coh", label: "Coherence" },
-  { key: "rmse", label: "RMSE" },
-];
 
 interface MenuState {
   x: number;
@@ -239,39 +229,6 @@ export default function SidePanel(p: Props) {
               "—"
             )}
           </div>
-        </section>
-      )}
-
-      {p.selectedId && (
-        <section className="panel-section">
-          <h2>Display</h2>
-          <div className="segmented">
-            {COLOR_OPTIONS.map((o) => (
-              <button
-                key={o.key}
-                className={o.key === p.colorBy ? "seg-btn active" : "seg-btn"}
-                onClick={() => p.onColorBy(o.key)}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-          <label className="slider-row">
-            <span className="slider-label">
-              Color clip{" "}
-              <b>
-                {(100 - p.clipPct).toFixed(0)}–{p.clipPct.toFixed(0)}%
-              </b>
-            </span>
-            <input
-              type="range"
-              min={80}
-              max={100}
-              step={0.5}
-              value={p.clipPct}
-              onChange={(e) => p.onClipPct(Number(e.target.value))}
-            />
-          </label>
         </section>
       )}
 

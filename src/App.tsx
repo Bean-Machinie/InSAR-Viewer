@@ -9,7 +9,7 @@ import type {
 } from "./api/types";
 import { colorFor } from "./lib/colormaps";
 import { computeDomain, percentile } from "./lib/stats";
-import MapView from "./components/MapView";
+import MapView, { type BaseMap } from "./components/MapView";
 import SidePanel from "./components/SidePanel";
 import TimeSeriesPanel from "./components/TimeSeriesPanel";
 
@@ -33,6 +33,8 @@ export default function App() {
   // Display
   const [colorBy, setColorBy] = useState<ColorBy>("vel");
   const [clipPct, setClipPct] = useState(98);
+  const [showData, setShowData] = useState(true);
+  const [baseMap, setBaseMap] = useState<BaseMap>("esri");
 
   // Selection + time series
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(
@@ -207,11 +209,13 @@ export default function App() {
       : null
     : gridError
       ? `Could not load grid: ${gridError}`
-      : !gridLoading && grid !== null && grid.count === 0
-        ? "This project has no valid (non-NaN) pixels"
-        : !gridLoading && grid !== null && visibleIdx.length === 0
-          ? "No pixels pass the current filter — lower min coherence"
-          : null;
+      : !showData
+        ? null
+        : !gridLoading && grid !== null && grid.count === 0
+          ? "This project has no valid (non-NaN) pixels"
+          : !gridLoading && grid !== null && visibleIdx.length === 0
+            ? "No pixels pass the current filter — lower min coherence"
+            : null;
 
   return (
     <div className="app">
@@ -228,20 +232,23 @@ export default function App() {
         openError={openError}
         cohMin={cohMin}
         onCohMin={setCohMin}
-        colorBy={colorBy}
-        onColorBy={setColorBy}
-        clipPct={clipPct}
-        onClipPct={setClipPct}
         pixelCount={grid ? visibleIdx.length : null}
         gridLoading={gridLoading}
       />
       <main className="main">
         <MapView
           bounds={detail?.bounds ?? null}
+          baseMap={baseMap}
+          onBaseMap={setBaseMap}
+          showData={showData}
+          onShowData={setShowData}
           grid={grid}
           visibleIdx={visibleIdx}
           colorOf={colorOf}
           colorBy={colorBy}
+          onColorBy={setColorBy}
+          clipPct={clipPct}
+          onClipPct={setClipPct}
           domain={domain}
           selected={selectedCell}
           onPickCell={onPickCell}
