@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api/client";
 import type {
-  ColorBy,
   GridResponse,
   ProjectDetail,
   ProjectSummary,
@@ -9,11 +8,17 @@ import type {
 } from "./api/types";
 import { colorFor } from "./lib/colormaps";
 import { computeDomain, percentile } from "./lib/stats";
-import MapView, { type BaseMap } from "./components/MapView";
+import { useSettings } from "./state/settings";
+import MapView from "./components/MapView";
 import SidePanel from "./components/SidePanel";
 import TimeSeriesPanel from "./components/TimeSeriesPanel";
 
 export default function App() {
+  // Display settings (colorBy, colormap, clip, shape, …) live in context
+  const { settings } = useSettings();
+  const { colorBy, clipPct, showData } = settings;
+  const cmapId = settings.colormap[colorBy];
+
   // Projects
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [dataRoot, setDataRoot] = useState<string | null>(null);
@@ -29,12 +34,6 @@ export default function App() {
   const [gridLoading, setGridLoading] = useState(false);
   const [gridError, setGridError] = useState<string | null>(null);
   const [cohMin, setCohMin] = useState(0.3);
-
-  // Display
-  const [colorBy, setColorBy] = useState<ColorBy>("vel");
-  const [clipPct, setClipPct] = useState(98);
-  const [showData, setShowData] = useState(true);
-  const [baseMap, setBaseMap] = useState<BaseMap>("esri");
 
   // Selection + time series
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(
@@ -178,8 +177,8 @@ export default function App() {
   const colorOf = useMemo(() => {
     if (!grid) return () => "#000";
     const vals = grid.cells[colorBy];
-    return (k: number) => colorFor(vals[k], domain, colorBy);
-  }, [grid, colorBy, domain]);
+    return (k: number) => colorFor(vals[k], domain, cmapId);
+  }, [grid, colorBy, cmapId, domain]);
 
   // Exact-cell click → time series at that cell's centre coordinates
   const onPickCell = useCallback(
@@ -238,17 +237,9 @@ export default function App() {
       <main className="main">
         <MapView
           bounds={detail?.bounds ?? null}
-          baseMap={baseMap}
-          onBaseMap={setBaseMap}
-          showData={showData}
-          onShowData={setShowData}
           grid={grid}
           visibleIdx={visibleIdx}
           colorOf={colorOf}
-          colorBy={colorBy}
-          onColorBy={setColorBy}
-          clipPct={clipPct}
-          onClipPct={setClipPct}
           domain={domain}
           selected={selectedCell}
           onPickCell={onPickCell}

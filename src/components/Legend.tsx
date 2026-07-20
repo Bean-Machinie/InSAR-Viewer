@@ -1,9 +1,8 @@
-import type { ColorBy } from "../api/types";
 import { COLOR_LABELS, legendGradient } from "../lib/colormaps";
 import type { Domain } from "../lib/stats";
+import { useSettings } from "../state/settings";
 
 interface Props {
-  colorBy: ColorBy;
   domain: Domain;
 }
 
@@ -14,7 +13,10 @@ function fmt(x: number): string {
   return x.toFixed(2).replace(/\.?0+$/, "") || "0";
 }
 
-export default function Legend({ colorBy, domain }: Props) {
+export default function Legend({ domain }: Props) {
+  const { settings } = useSettings();
+  const colorBy = settings.colorBy;
+  const cmapId = settings.colormap[colorBy];
   const { title, units } = COLOR_LABELS[colorBy];
   const mid = (domain.min + domain.max) / 2;
   return (
@@ -23,17 +25,14 @@ export default function Legend({ colorBy, domain }: Props) {
         {title}
         {units ? <span className="legend-units"> ({units})</span> : null}
       </div>
-      <div
-        className="legend-bar"
-        style={{ background: legendGradient(colorBy) }}
-      />
+      <div className="legend-bar" style={{ background: legendGradient(cmapId) }} />
       <div className="legend-labels">
         <span>{fmt(domain.min)}</span>
         <span>{fmt(mid)}</span>
         <span>{fmt(domain.max)}</span>
       </div>
-      {colorBy === "vel" && (
-        <div className="legend-note">red = away (subsidence) · blue = toward satellite</div>
+      {colorBy === "vel" && cmapId === "buwhrd" && (
+        <div className="legend-note">blue = away (subsidence) · red = toward satellite</div>
       )}
     </div>
   );

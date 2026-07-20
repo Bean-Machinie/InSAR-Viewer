@@ -376,6 +376,12 @@ input[type="range"]::-moz-range-thumb {
   font-variant-numeric: tabular-nums;
 }
 
+.sub-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 2px 0 6px;
+}
+
 /* Segmented control */
 
 .segmented {
@@ -568,9 +574,12 @@ input[type="range"]::-moz-range-thumb {
   margin: 8px -12px;
 }
 
-.map-ctl-seg {
-  margin-bottom: 10px;
-  margin-top: 4px;
+.map-ctl-seg-wrap {
+  margin-top: 6px;
+}
+
+.map-ctl-seg-wrap .segmented {
+  margin-bottom: 4px;
 }
 
 .map-ctl-panel .slider-row {

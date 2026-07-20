@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { ProjectDetail, ProjectSummary } from "../api/types";
+import { ClipSlider, OpacitySlider, ShapePicker } from "./controls";
 
 interface Props {
   projects: ProjectSummary[];
@@ -229,6 +230,16 @@ export default function SidePanel(p: Props) {
               "—"
             )}
           </div>
+        </section>
+      )}
+
+      {p.selectedId && (
+        <section className="panel-section">
+          <h2>Display</h2>
+          <div className="sub-label">Pixel shape</div>
+          <ShapePicker />
+          <ClipSlider />
+          <OpacitySlider />
         </section>
       )}
 
