@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "../api/client";
 import type { ColorBy, ProjectDetail, ProjectSummary } from "../api/types";
 
 interface Props {
@@ -9,15 +10,11 @@ interface Props {
   selectedId: string | null;
   onSelectProject: (id: string) => void;
   onRemoveProject: (id: string) => void;
-  onOpenFolder: (path?: string) => void;
+  onOpenFolder: () => void;
   openBusy: boolean;
   openError: string | null;
-  detail: ProjectDetail | null;
-  detailLoading: boolean;
   cohMin: number;
-  rmseMax: number;
   onCohMin: (v: number) => void;
-  onRmseMax: (v: number) => void;
   colorBy: ColorBy;
   onColorBy: (v: ColorBy) => void;
   clipPct: number;
@@ -44,8 +41,108 @@ const COLOR_OPTIONS: { key: ColorBy; label: string }[] = [
   { key: "rmse", label: "RMSE" },
 ];
 
+interface MenuState {
+  x: number;
+  y: number;
+  id: string;
+}
+
+function MetadataModal({ id, onClose }: { id: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .projectDetail(id)
+      .then((d) => {
+        if (!cancelled) setDetail(d);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) setError(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">{id}</div>
+          <button className="modal-close" aria-label="Close" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        {error && <div className="error-box">{error}</div>}
+        {!detail && !error && <div className="muted">Loading metadata…</div>}
+        {detail && (
+          <dl className="meta-grid">
+            <dt>Date range</dt>
+            <dd>
+              {fmtDate(detail.date_start)} → {fmtDate(detail.date_end)}
+            </dd>
+            <dt>Epochs</dt>
+            <dd>{detail.n_dates ?? "—"}</dd>
+            <dt>Orbit</dt>
+            <dd>{orbitLabel(detail.orbit)}</dd>
+            <dt>Preset</dt>
+            <dd>{detail.preset ?? "—"}</dd>
+            <dt>Resolution</dt>
+            <dd>{detail.resolution_m ? `${detail.resolution_m} m` : "—"}</dd>
+            <dt>Pairs</dt>
+            <dd>{detail.n_pairs_final ?? "—"}</dd>
+            <dt>Software</dt>
+            <dd>{detail.software ?? "—"}</dd>
+            <dt>Grid</dt>
+            <dd>
+              {detail.grid.n_lat} × {detail.grid.n_lon} (
+              {detail.grid.n_valid.toLocaleString()} valid px)
+            </dd>
+          </dl>
+        )}
+        {detail?.warnings && detail.warnings.length > 0 && (
+          <div className="warn-box">
+            {detail.warnings.map((w, i) => (
+              <div key={i}>⚠ {w}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function SidePanel(p: Props) {
-  const [pathInput, setPathInput] = useState("");
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [metaFor, setMetaFor] = useState<string | null>(null);
+
+  // Close the context menu on any click, scroll, or Escape
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
   return (
     <aside className="side-panel">
       <header className="panel-header">
@@ -60,30 +157,8 @@ export default function SidePanel(p: Props) {
           onClick={() => p.onOpenFolder()}
           disabled={p.openBusy}
         >
-          {p.openBusy ? "Waiting for folder…" : "Load results folder…"}
+          {p.openBusy ? "Waiting for folder…" : "Load Dataset"}
         </button>
-        <form
-          className="path-row"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (pathInput.trim()) {
-              p.onOpenFolder(pathInput);
-              setPathInput("");
-            }
-          }}
-        >
-          <input
-            type="text"
-            placeholder="…or paste a folder path"
-            value={pathInput}
-            onChange={(e) => setPathInput(e.target.value)}
-            disabled={p.openBusy}
-            spellCheck={false}
-          />
-          <button type="submit" disabled={p.openBusy || !pathInput.trim()}>
-            Add
-          </button>
-        </form>
         {p.openError && <div className="error-box open-error">{p.openError}</div>}
         {p.projectsLoading && <div className="muted">Scanning results folders…</div>}
         {p.projectsError && (
@@ -93,8 +168,8 @@ export default function SidePanel(p: Props) {
         )}
         {!p.projectsLoading && !p.projectsError && p.projects.length === 0 && (
           <div className="muted">
-            No projects loaded yet. Click “Load results folder…” and pick any
-            folder containing velocity_mm_yr.nc + run_metadata.json.
+            No datasets loaded yet. Click “Load Dataset” and pick any folder
+            containing velocity_mm_yr.nc + run_metadata.json.
             {p.dataRoot ? ` Folders inside ${p.dataRoot} are listed automatically.` : ""}
           </div>
         )}
@@ -104,6 +179,10 @@ export default function SidePanel(p: Props) {
               <button
                 className={proj.id === p.selectedId ? "project-btn active" : "project-btn"}
                 onClick={() => p.onSelectProject(proj.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (!proj.error) setMenu({ x: e.clientX, y: e.clientY, id: proj.id });
+                }}
                 disabled={!!proj.error}
                 title={proj.error ?? proj.path ?? undefined}
               >
@@ -135,45 +214,6 @@ export default function SidePanel(p: Props) {
 
       {p.selectedId && (
         <section className="panel-section">
-          <h2>Metadata</h2>
-          {p.detailLoading && <div className="muted">Loading project…</div>}
-          {p.detail && (
-            <dl className="meta-grid">
-              <dt>Date range</dt>
-              <dd>
-                {fmtDate(p.detail.date_start)} → {fmtDate(p.detail.date_end)}
-              </dd>
-              <dt>Epochs</dt>
-              <dd>{p.detail.n_dates ?? "—"}</dd>
-              <dt>Orbit</dt>
-              <dd>{orbitLabel(p.detail.orbit)}</dd>
-              <dt>Preset</dt>
-              <dd>{p.detail.preset ?? "—"}</dd>
-              <dt>Resolution</dt>
-              <dd>{p.detail.resolution_m ? `${p.detail.resolution_m} m` : "—"}</dd>
-              <dt>Pairs</dt>
-              <dd>{p.detail.n_pairs_final ?? "—"}</dd>
-              <dt>Software</dt>
-              <dd>{p.detail.software ?? "—"}</dd>
-              <dt>Grid</dt>
-              <dd>
-                {p.detail.grid.n_lat} × {p.detail.grid.n_lon} (
-                {p.detail.grid.n_valid.toLocaleString()} valid px)
-              </dd>
-            </dl>
-          )}
-          {p.detail?.warnings && p.detail.warnings.length > 0 && (
-            <div className="warn-box">
-              {p.detail.warnings.map((w, i) => (
-                <div key={i}>⚠ {w}</div>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {p.selectedId && (
-        <section className="panel-section">
           <h2>Quality filters</h2>
           <label className="slider-row">
             <span className="slider-label">
@@ -186,19 +226,6 @@ export default function SidePanel(p: Props) {
               step={0.01}
               value={p.cohMin}
               onChange={(e) => p.onCohMin(Number(e.target.value))}
-            />
-          </label>
-          <label className="slider-row">
-            <span className="slider-label">
-              Max RMSE <b>{p.rmseMax.toFixed(1)} mm</b>
-            </span>
-            <input
-              type="range"
-              min={0}
-              max={30}
-              step={0.5}
-              value={p.rmseMax}
-              onChange={(e) => p.onRmseMax(Number(e.target.value))}
             />
           </label>
           <div className="count-row">
@@ -247,6 +274,26 @@ export default function SidePanel(p: Props) {
           </label>
         </section>
       )}
+
+      {menu && (
+        <div
+          className="context-menu"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            className="context-menu-item"
+            onClick={() => {
+              setMetaFor(menu.id);
+              setMenu(null);
+            }}
+          >
+            Metadata
+          </button>
+        </div>
+      )}
+
+      {metaFor && <MetadataModal id={metaFor} onClose={() => setMetaFor(null)} />}
     </aside>
   );
 }

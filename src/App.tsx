@@ -8,7 +8,7 @@ import type {
   TimeseriesResponse,
 } from "./api/types";
 import { colorFor } from "./lib/colormaps";
-import { computeDomain } from "./lib/stats";
+import { computeDomain, percentile } from "./lib/stats";
 import MapView from "./components/MapView";
 import SidePanel from "./components/SidePanel";
 import TimeSeriesPanel from "./components/TimeSeriesPanel";
@@ -21,7 +21,6 @@ export default function App() {
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [openBusy, setOpenBusy] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
 
@@ -30,7 +29,6 @@ export default function App() {
   const [gridLoading, setGridLoading] = useState(false);
   const [gridError, setGridError] = useState<string | null>(null);
   const [cohMin, setCohMin] = useState(0.3);
-  const [rmseMax, setRmseMax] = useState(10);
 
   // Display
   const [colorBy, setColorBy] = useState<ColorBy>("vel");
@@ -88,7 +86,6 @@ export default function App() {
     (id: string) => {
       setSelectedId(id);
       setDetail(null);
-      setDetailLoading(true);
       setGrid(null);
       setGridError(null);
       setGridLoading(true);
@@ -96,8 +93,7 @@ export default function App() {
       api
         .projectDetail(id)
         .then(setDetail)
-        .catch((e: Error) => setGridError(e.message))
-        .finally(() => setDetailLoading(false));
+        .catch((e: Error) => setGridError(e.message));
       api
         .grid(id)
         .then((g) => {
@@ -113,15 +109,13 @@ export default function App() {
     [clearSelection],
   );
 
-  // Load any results folder from disk: native picker (no arg) or pasted path
+  // Load a results folder from disk via the native picker
   const openFolder = useCallback(
-    (path?: string) => {
+    () => {
       setOpenBusy(true);
       setOpenError(null);
-      const req = path?.trim()
-        ? api.openFolderPath(path.trim())
-        : api.openFolderDialog();
-      req
+      api
+        .openFolderDialog()
         .then((entry) => {
           setProjects((prev) =>
             prev.some((x) => x.id === entry.id) ? prev : [...prev, entry],
@@ -158,18 +152,24 @@ export default function App() {
   // Client-side filtering: instant sliders, no re-fetch
   const visibleIdx = useMemo(() => {
     if (!grid) return [];
-    const { coh, rmse } = grid.cells;
+    const { coh } = grid.cells;
     const out: number[] = [];
     for (let k = 0; k < coh.length; k++) {
-      if (coh[k] >= cohMin && rmse[k] <= rmseMax) out.push(k);
+      if (coh[k] >= cohMin) out.push(k);
     }
     return out;
-  }, [grid, cohMin, rmseMax]);
+  }, [grid, cohMin]);
 
   const domain = useMemo(() => {
     if (!grid) return { min: -1, max: 1 };
     const vals = grid.cells[colorBy];
     const values = visibleIdx.map((k) => vals[k]);
+    // Coherence: anchor the scale at 0 (a 0.30 pixel shouldn't look pitch
+    // black) but let the clip slider set the upper end from the data.
+    if (colorBy === "coh") {
+      const max = percentile(values, clipPct);
+      return { min: 0, max: max > 0 ? max : 1 };
+    }
     return computeDomain(values, colorBy === "vel", clipPct);
   }, [grid, visibleIdx, colorBy, clipPct]);
 
@@ -210,7 +210,7 @@ export default function App() {
       : !gridLoading && grid !== null && grid.count === 0
         ? "This project has no valid (non-NaN) pixels"
         : !gridLoading && grid !== null && visibleIdx.length === 0
-          ? "No pixels pass the current filters — relax coherence/RMSE"
+          ? "No pixels pass the current filter — lower min coherence"
           : null;
 
   return (
@@ -226,12 +226,8 @@ export default function App() {
         onOpenFolder={openFolder}
         openBusy={openBusy}
         openError={openError}
-        detail={detail}
-        detailLoading={detailLoading}
         cohMin={cohMin}
-        rmseMax={rmseMax}
         onCohMin={setCohMin}
-        onRmseMax={setRmseMax}
         colorBy={colorBy}
         onColorBy={setColorBy}
         clipPct={clipPct}
