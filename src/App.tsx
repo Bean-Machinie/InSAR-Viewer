@@ -163,7 +163,10 @@ export default function App() {
 
   const domain = useMemo(() => {
     if (!grid) return { min: -1, max: 1 };
+    // Guard: colorBy can reference a layer this grid doesn't have (stale
+    // persisted settings / older backend) — don't crash the whole app.
     const vals = grid.cells[colorBy];
+    if (!vals) return { min: -1, max: 1 };
     const values = visibleIdx.map((k) => vals[k]);
     // Coherence: anchor the scale at 0 (a 0.30 pixel shouldn't look pitch
     // black) but let the clip slider set the upper end from the data.
@@ -177,6 +180,7 @@ export default function App() {
   const colorOf = useMemo(() => {
     if (!grid) return () => "#000";
     const vals = grid.cells[colorBy];
+    if (!vals) return () => "#000";
     return (k: number) => colorFor(vals[k], domain, cmapId);
   }, [grid, colorBy, cmapId, domain]);
 

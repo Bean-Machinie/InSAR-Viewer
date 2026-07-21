@@ -41,6 +41,8 @@ const DEFAULTS: DisplaySettings = {
   opacity: 0.9,
 };
 
+const COLOR_BYS: readonly ColorBy[] = ["vel", "coh", "rmse"];
+
 const STORAGE_KEY = "insar-viewer.display";
 
 function load(): DisplaySettings {
@@ -53,11 +55,13 @@ function load(): DisplaySettings {
       ...parsed,
       colormap: { ...DEFAULTS.colormap, ...(parsed.colormap ?? {}) },
     };
-    // Drop colormap ids / shapes that no longer exist in the registries
+    // Drop colormap ids / shapes / layers that no longer exist in the registries
     for (const key of Object.keys(s.colormap) as ColorBy[]) {
       if (!COLORMAPS[s.colormap[key]]) s.colormap[key] = DEFAULTS.colormap[key];
     }
     if (!SHAPES[s.pixelShape]) s.pixelShape = DEFAULTS.pixelShape;
+    if (!COLOR_BYS.includes(s.colorBy)) s.colorBy = DEFAULTS.colorBy;
+    if (s.baseMap !== "esri" && s.baseMap !== "osm") s.baseMap = DEFAULTS.baseMap;
     return s;
   } catch {
     return DEFAULTS;
