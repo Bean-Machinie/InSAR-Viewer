@@ -64,4 +64,18 @@ export interface TimeseriesResponse {
   n_valid_epochs: number;
 }
 
-export type ColorBy = "vel" | "coh" | "rmse";
+export type ColorBy = "vel" | "coh" | "rmse" | "disp";
+
+/**
+ * Displacement cube for every valid cell, aligned to GridResponse.cells
+ * by index. `cells.disp[dateIdx][k]` is the displacement (mm) of grid cell
+ * `k` at date `dates[dateIdx]`; null where that epoch is NaN.
+ */
+export interface DisplacementResponse {
+  dates: string[];
+  count: number;
+  reference_date?: string | null;
+  cells: {
+    disp: (number | null)[][];
+  };
+}

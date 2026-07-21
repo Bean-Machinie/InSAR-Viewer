@@ -1,5 +1,6 @@
 import type {
   ColorBy,
+  DisplacementResponse,
   GridResponse,
   ProjectDetail,
   ProjectSummary,
@@ -48,6 +49,12 @@ export const api = {
   /** All valid cells (columnar) + axes; fetched once, filtered client-side. */
   grid: (id: string) =>
     getJSON<GridResponse>(`/api/projects/${encodeURIComponent(id)}/grid`),
+
+  /** Full displacement cube for every valid cell (date × cell), aligned to grid. */
+  displacement: (id: string) =>
+    getJSON<DisplacementResponse>(
+      `/api/projects/${encodeURIComponent(id)}/displacement`,
+    ),
 
   /** Filtered grid rendered server-side as a georeferenced PNG. */
   raster: (

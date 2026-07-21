@@ -34,6 +34,11 @@ export default function Legend({ domain }: Props) {
       {colorBy === "vel" && cmapId === "buwhrd" && (
         <div className="legend-note">blue = away (subsidence) · red = toward satellite</div>
       )}
+      {colorBy === "disp" && (
+        <div className="legend-note">
+          cumulative vs. reference date · scale pinned to final epoch
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import type { Bounds, GridResponse } from "../api/types";
 import type { Domain } from "../lib/stats";
@@ -77,6 +77,70 @@ function MapControls({ hasData }: { hasData: boolean }) {
   );
 }
 
+/**
+ * Bottom-centred timeline for the Displacement layer. Slide (or play) across
+ * epochs to watch deformation accumulate; the colour scale stays pinned to
+ * the final date, so the reference date reads as ~0 (white). Rendered as a
+ * sibling overlay (not a Leaflet control), so dragging it never pans the map.
+ */
+function DateSlider({
+  dates,
+  idx,
+  onIdx,
+}: {
+  dates: string[];
+  idx: number;
+  onIdx: Dispatch<SetStateAction<number>>;
+}) {
+  const [playing, setPlaying] = useState(false);
+  const last = dates.length - 1;
+  const clamped = Math.min(Math.max(idx, 0), last);
+
+  useEffect(() => {
+    if (!playing || dates.length < 2) return;
+    const id = window.setInterval(() => {
+      onIdx((prev) => (prev >= last ? 0 : prev + 1));
+    }, 650);
+    return () => window.clearInterval(id);
+  }, [playing, last, dates.length, onIdx]);
+
+  return (
+    <div className="date-slider" onDoubleClick={(e) => e.stopPropagation()}>
+      <button
+        className="date-play"
+        onClick={() => setPlaying((p) => !p)}
+        title={playing ? "Pause" : "Play through dates"}
+        disabled={dates.length < 2}
+      >
+        {playing ? "❚❚" : "▶"}
+      </button>
+      <div className="date-slider-main">
+        <div className="date-current">
+          <span className="date-value">{dates[clamped]}</span>
+          <span className="date-count">
+            {clamped + 1} / {dates.length}
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={last}
+          step={1}
+          value={clamped}
+          onChange={(e) => {
+            setPlaying(false);
+            onIdx(Number(e.target.value));
+          }}
+        />
+        <div className="date-ends">
+          <span>{dates[0]}</span>
+          <span>{dates[last]}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface Props {
   bounds: Bounds | null;
   grid: GridResponse | null;
@@ -87,6 +151,11 @@ interface Props {
   onPickCell: (cellIdx: number) => void;
   overlayMessage: string | null;
   gridLoading: boolean;
+  /** Displacement timeline (null unless the cube is loaded). */
+  dispDates: string[] | null;
+  dateIdx: number;
+  onDateIdx: Dispatch<SetStateAction<number>>;
+  dispLoading: boolean;
 }
 
 export default function MapView({
@@ -99,8 +168,13 @@ export default function MapView({
   onPickCell,
   overlayMessage,
   gridLoading,
+  dispDates,
+  dateIdx,
+  onDateIdx,
+  dispLoading,
 }: Props) {
   const { settings } = useSettings();
+  const dispActive = settings.colorBy === "disp";
   return (
     <div className="map-wrap">
       <MapContainer center={[55.68, 12.45]} zoom={11} className="map" zoomControl>
@@ -127,6 +201,14 @@ export default function MapView({
       {gridLoading && <div className="map-loading">Loading grid…</div>}
       {overlayMessage && (
         <div className="map-overlay-message">{overlayMessage}</div>
+      )}
+      {dispActive && dispLoading && (
+        <div className="date-slider date-slider-loading">
+          Loading displacement…
+        </div>
+      )}
+      {dispActive && !dispLoading && dispDates && dispDates.length > 0 && (
+        <DateSlider dates={dispDates} idx={dateIdx} onIdx={onDateIdx} />
       )}
     </div>
   );

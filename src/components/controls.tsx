@@ -12,6 +12,7 @@ const COLOR_OPTIONS: { key: ColorBy; label: string }[] = [
   { key: "vel", label: "Velocity" },
   { key: "coh", label: "Coherence" },
   { key: "rmse", label: "RMSE" },
+  { key: "disp", label: "Displ." },
 ];
 
 export function BaseMapPicker() {

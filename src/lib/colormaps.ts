@@ -111,6 +111,9 @@ export const DEFAULT_COLORMAP: Record<ColorBy, string> = {
   vel: "buwhrd",
   coh: "viridis",
   rmse: "inferno",
+  // Diverging, centred on 0: at the reference date displacement is ~0 (white),
+  // moving red/blue as ground deforms toward/away from the satellite.
+  disp: "buwhrd",
 };
 
 function lerp(a: number, b: number, t: number): number {
@@ -150,4 +153,5 @@ export const COLOR_LABELS: Record<ColorBy, { title: string; units: string }> = {
   vel: { title: "LOS velocity", units: "mm/yr" },
   coh: { title: "Mean coherence", units: "" },
   rmse: { title: "RMSE", units: "mm" },
+  disp: { title: "LOS displacement", units: "mm" },
 };

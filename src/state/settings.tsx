@@ -41,7 +41,7 @@ const DEFAULTS: DisplaySettings = {
   opacity: 0.9,
 };
 
-const COLOR_BYS: readonly ColorBy[] = ["vel", "coh", "rmse"];
+const COLOR_BYS: readonly ColorBy[] = ["vel", "coh", "rmse", "disp"];
 
 const STORAGE_KEY = "insar-viewer.display";
 

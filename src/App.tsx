@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
 import type {
+  DisplacementResponse,
   GridResponse,
   ProjectDetail,
   ProjectSummary,
@@ -34,6 +35,14 @@ export default function App() {
   const [gridLoading, setGridLoading] = useState(false);
   const [gridError, setGridError] = useState<string | null>(null);
   const [cohMin, setCohMin] = useState(0.3);
+
+  // Displacement cube (date × cell) — fetched lazily, only when the
+  // Displacement layer is selected. `dateIdx` is which epoch is on screen.
+  const [disp, setDisp] = useState<DisplacementResponse | null>(null);
+  const [dispLoading, setDispLoading] = useState(false);
+  const [dispError, setDispError] = useState<string | null>(null);
+  const [dateIdx, setDateIdx] = useState(0);
+  const dispReqRef = useRef<string | null>(null);
 
   // Selection + time series
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(
@@ -90,6 +99,9 @@ export default function App() {
       setGrid(null);
       setGridError(null);
       setGridLoading(true);
+      setDisp(null);
+      setDispError(null);
+      dispReqRef.current = null;
       clearSelection();
       api
         .projectDetail(id)
@@ -150,6 +162,33 @@ export default function App() {
     [selectedId, clearSelection],
   );
 
+  // The displacement cube (date × cell) is much larger than the grid, so it
+  // is fetched lazily — only the first time the Displacement layer is chosen
+  // for a project. The ref dedupes concurrent fetches and ignores responses
+  // that arrive after the user switched projects.
+  useEffect(() => {
+    if (colorBy !== "disp" || !selectedId || disp) return;
+    if (dispReqRef.current === selectedId) return; // already fetching this one
+    dispReqRef.current = selectedId;
+    setDispLoading(true);
+    setDispError(null);
+    api
+      .displacement(selectedId)
+      .then((d) => {
+        if (dispReqRef.current !== selectedId) return; // project changed
+        setDisp(d);
+        // Default to the final epoch (full accumulated deformation) rather
+        // than the all-white reference date.
+        setDateIdx(d.dates.length > 0 ? d.dates.length - 1 : 0);
+      })
+      .catch((e: Error) => {
+        if (dispReqRef.current === selectedId) setDispError(e.message);
+      })
+      .finally(() => {
+        if (dispReqRef.current === selectedId) setDispLoading(false);
+      });
+  }, [colorBy, selectedId, disp]);
+
   // Client-side filtering: instant sliders, no re-fetch
   const visibleIdx = useMemo(() => {
     if (!grid) return [];
@@ -163,6 +202,23 @@ export default function App() {
 
   const domain = useMemo(() => {
     if (!grid) return { min: -1, max: 1 };
+
+    // Displacement: pin the colour scale to the FINAL epoch's spread so it
+    // never shifts as you slide the date. At the reference date values are
+    // ~0 (white, the centre of the diverging map); later epochs fill in
+    // toward that fixed range.
+    if (colorBy === "disp") {
+      const nDates = disp?.dates.length ?? 0;
+      const finalRow = nDates > 0 ? disp!.cells.disp[nDates - 1] : null;
+      if (!finalRow) return { min: -1, max: 1 };
+      const values: number[] = [];
+      for (const k of visibleIdx) {
+        const v = finalRow[k];
+        if (v != null) values.push(v);
+      }
+      return computeDomain(values, true, clipPct); // symmetric around 0
+    }
+
     // Guard: colorBy can reference a layer this grid doesn't have (stale
     // persisted settings / older backend) — don't crash the whole app.
     const vals = grid.cells[colorBy];
@@ -175,14 +231,24 @@ export default function App() {
       return { min: 0, max: max > 0 ? max : 1 };
     }
     return computeDomain(values, colorBy === "vel", clipPct);
-  }, [grid, visibleIdx, colorBy, clipPct]);
+  }, [grid, visibleIdx, colorBy, clipPct, disp]);
 
   const colorOf = useMemo(() => {
     if (!grid) return () => "#000";
+    // Displacement at the currently-selected epoch; null pixels (NaN that
+    // date) draw transparent. Domain stays pinned to the final epoch above.
+    if (colorBy === "disp") {
+      const row = disp?.cells.disp[dateIdx];
+      if (!row) return () => "rgba(0,0,0,0)";
+      return (k: number) => {
+        const v = row[k];
+        return v == null ? "rgba(0,0,0,0)" : colorFor(v, domain, cmapId);
+      };
+    }
     const vals = grid.cells[colorBy];
     if (!vals) return () => "#000";
     return (k: number) => colorFor(vals[k], domain, cmapId);
-  }, [grid, colorBy, cmapId, domain]);
+  }, [grid, colorBy, cmapId, domain, disp, dateIdx]);
 
   // Exact-cell click → time series at that cell's centre coordinates
   const onPickCell = useCallback(
@@ -212,6 +278,8 @@ export default function App() {
       : null
     : gridError
       ? `Could not load grid: ${gridError}`
+      : colorBy === "disp" && dispError
+        ? `Could not load displacement: ${dispError}`
       : !showData
         ? null
         : !gridLoading && grid !== null && grid.count === 0
@@ -249,6 +317,10 @@ export default function App() {
           onPickCell={onPickCell}
           overlayMessage={overlayMessage}
           gridLoading={gridLoading}
+          dispDates={disp?.dates ?? null}
+          dateIdx={dateIdx}
+          onDateIdx={setDateIdx}
+          dispLoading={colorBy === "disp" && dispLoading}
         />
         {tsOpen && (
           <TimeSeriesPanel

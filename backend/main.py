@@ -469,6 +469,48 @@ def grid(project_id: str) -> dict:
     }
 
 
+@app.get("/api/projects/{project_id}/displacement")
+def displacement(project_id: str) -> dict:
+    """Full displacement cube for every valid cell, columnar per date.
+
+    Cells are emitted in the *same order* as ``/grid`` (identical validity
+    mask + ``np.nonzero``), so the frontend can index the displacement of
+    cell ``k`` at date ``t`` as ``disp[t][k]`` and reuse the grid geometry
+    and coherence filter unchanged. NaN epochs become ``null``. Rounded to
+    0.1 mm to keep the payload compact.
+    """
+    proj = store.get(project_id)
+    if proj.disp is None:
+        raise HTTPException(422, "This project has no displacement cube")
+
+    da = proj.disp.transpose("date", "lat", "lon")
+    if da.sizes.get("lat") != proj.lat.size or da.sizes.get("lon") != proj.lon.size:
+        raise HTTPException(422, "displacement grid axes do not match velocity grid")
+
+    # Same mask/order as /grid so cell index k lines up across both responses.
+    mask = np.isfinite(proj.vel) & np.isfinite(proj.coh) & np.isfinite(proj.rmse)
+    ii, jj = np.nonzero(mask)
+
+    cube = np.asarray(da.values, dtype=np.float64)  # (n_dates, n_lat, n_lon)
+    vals = np.round(cube[:, ii, jj], 1)             # (n_dates, n_cells)
+
+    # NaN -> None, vectorised (avoids a per-element Python loop over the cube).
+    obj = vals.astype(object)
+    obj[~np.isfinite(vals)] = None
+
+    dates = [
+        str(d)[:10]
+        for d in np.asarray(da["date"].values, dtype="datetime64[D]")
+    ]
+    acq = proj.meta.get("acquisition") or {}
+    return {
+        "dates": dates,
+        "count": int(ii.size),
+        "reference_date": acq.get("reference_date"),
+        "cells": {"disp": obj.tolist()},
+    }
+
+
 @app.get("/api/projects/{project_id}")
 def project_detail(project_id: str) -> dict:
     proj = store.get(project_id)
