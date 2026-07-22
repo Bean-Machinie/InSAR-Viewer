@@ -915,3 +915,55 @@ input[type="range"]::-moz-range-thumb {
   padding-top: 8px;
   border-top: 1px solid var(--border);
 }
+
+/* Capture buttons (live in the 3D control panel, which is excluded from captures) */
+.capture-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.capture-btn {
+  flex: 1;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.capture-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.capture-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.capture-btn.rec {
+  color: var(--danger);
+}
+
+.capture-btn.rec.active {
+  background: rgba(224, 104, 95, 0.16);
+  border-color: var(--danger);
+  animation: recpulse 1.2s ease-in-out infinite;
+}
+
+@keyframes recpulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.62; }
+}
+
+.capture-note {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  line-height: 1.4;
+}

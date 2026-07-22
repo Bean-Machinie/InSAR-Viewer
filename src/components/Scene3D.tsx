@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
   type SetStateAction,
@@ -22,6 +23,7 @@ import type { Domain } from "../lib/stats";
 import { buildLut, lutBin, COLOR_LABELS } from "../lib/colormaps";
 import { loadDEM, type DEM } from "../lib/dem";
 import { loadImagery, type Imagery } from "../lib/imagery";
+import { useSceneCapture } from "../lib/capture";
 import {
   buildDrapeBase,
   buildDrapeMesh,
@@ -97,7 +99,19 @@ function fmt(x: number, nd = 1): string {
   return x.toFixed(nd + 1);
 }
 
-function Scene3DControls({ hasData }: { hasData: boolean }) {
+function Scene3DControls({
+  hasData,
+  recording,
+  busy,
+  onSaveImage,
+  onToggleRecording,
+}: {
+  hasData: boolean;
+  recording: boolean;
+  busy: boolean;
+  onSaveImage: () => void;
+  onToggleRecording: () => void;
+}) {
   const [open, setOpen] = useState(true);
   if (!open) {
     return (
@@ -146,6 +160,22 @@ function Scene3DControls({ hasData }: { hasData: boolean }) {
             <PointSizeSlider />
           </>
         )}
+        <div className="map-ctl-sep" />
+        <div className="map-ctl-title">Capture</div>
+        <div className="capture-row">
+          <button className="capture-btn" onClick={onSaveImage} disabled={busy}>
+            {busy ? "Saving…" : "Save image"}
+          </button>
+          <button
+            className={recording ? "capture-btn rec active" : "capture-btn rec"}
+            onClick={onToggleRecording}
+          >
+            {recording ? "■ Stop" : "● Record"}
+          </button>
+        </div>
+        <div className="capture-note">
+          Captures the map and its panels (not this control box).
+        </div>
       </div>
     </div>
   );
@@ -626,8 +656,11 @@ export default function Scene3D({
     : null;
   const satFailed = useSat && imagery !== null && !imagery.ok;
 
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const capture = useSceneCapture(wrapRef);
+
   return (
-    <div className="deck-wrap">
+    <div className="deck-wrap" ref={wrapRef}>
       <DeckGL
         key={boundsKey}
         views={new DeckMapView({ repeat: true })}
@@ -647,7 +680,13 @@ export default function Scene3D({
         }}
       />
 
-      <Scene3DControls hasData={grid !== null} />
+      <Scene3DControls
+        hasData={grid !== null}
+        recording={capture.recording}
+        busy={capture.busy}
+        onSaveImage={capture.saveImage}
+        onToggleRecording={capture.toggleRecording}
+      />
 
       {showData && grid !== null && visibleIdx.length > 0 && <Legend domain={domain} />}
 
