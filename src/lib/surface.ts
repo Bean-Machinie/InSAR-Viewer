@@ -229,21 +229,21 @@ const NEUTRAL: [number, number, number] = [96, 100, 108];
  */
 export function buildTerrainMesh(
   base: TerrainBase,
-  nodeVal: Float32Array,
+  nodeValHeight: Float32Array,
+  nodeValColor: Float32Array,
   lut: ColorLut,
   terrainExag: number,
   deformExag: number,
   deformActive: boolean,
-): { mesh: TerrainMesh; skin: TerrainMesh; stats: SurfaceStats } {
+): { mesh: TerrainMesh; stats: SurfaceStats } {
   const nNode = base.nR * base.nC;
   const positions = new Float32Array(nNode * 3);
   const normals = new Float32Array(nNode * 3);
-  // `colors`: terrain body colour (deformation where data, neutral elsewhere),
-  // used when the terrain itself is coloured (deformation texture mode).
-  // `skin`: deformation colour where data, TRANSPARENT elsewhere, for the
-  // drape that hugs the satellite terrain.
+  // Terrain body colour: deformation where data, neutral elsewhere. Used when
+  // the terrain itself is coloured (deformation texture mode); ignored when the
+  // satellite texture is applied. Height uses a SMOOTHED field so the body
+  // doesn't spike its per-pixel peaks up through the (smooth) drape.
   const colors = new Uint8Array(nNode * 4);
-  const skin = new Uint8Array(nNode * 4);
 
   let defMin = Infinity;
   let defMax = -Infinity;
@@ -255,16 +255,16 @@ export function buildTerrainMesh(
     positions[q] = base.xy[p * 2];
     positions[q + 1] = base.xy[p * 2 + 1];
     let z = base.elev[p] * terrainExag;
-    const v = nodeVal[base.cellId[p]];
+    const vH = nodeValHeight[base.cellId[p]];
+    if (deformActive && Number.isFinite(vH)) z += (vH / 1000) * deformExag;
+    const v = nodeValColor[base.cellId[p]];
     const o = p * 4;
     if (Number.isFinite(v)) {
-      if (deformActive) z += (v / 1000) * deformExag;
       const b = lutBin(lut, v);
-      colors[o] = skin[o] = lut.r[b];
-      colors[o + 1] = skin[o + 1] = lut.g[b];
-      colors[o + 2] = skin[o + 2] = lut.b[b];
+      colors[o] = lut.r[b];
+      colors[o + 1] = lut.g[b];
+      colors[o + 2] = lut.b[b];
       colors[o + 3] = 255;
-      skin[o + 3] = 255;
       if (v < defMin) defMin = v;
       if (v > defMax) defMax = v;
       const a = Math.abs(v);
@@ -275,27 +275,20 @@ export function buildTerrainMesh(
       colors[o + 1] = NEUTRAL[1];
       colors[o + 2] = NEUTRAL[2];
       colors[o + 3] = 255;
-      // skin stays 0,0,0,0 → transparent, so the satellite shows through.
     }
     positions[q + 2] = z;
     normals[q + 2] = 1;
   }
 
-  const geom = {
-    POSITION: { value: positions, size: 3 },
-    NORMAL: { value: normals, size: 3 },
-    TEXCOORD_0: { value: base.tex, size: 2 },
-  };
-
   return {
     mesh: {
-      attributes: { ...geom, COLOR_0: { value: colors, size: 4, normalized: true } },
+      attributes: {
+        POSITION: { value: positions, size: 3 },
+        NORMAL: { value: normals, size: 3 },
+        TEXCOORD_0: { value: base.tex, size: 2 },
+        COLOR_0: { value: colors, size: 4, normalized: true },
+      },
       indices: { value: base.indices, size: 1 },
-    },
-    skin: {
-      attributes: { ...geom, COLOR_0: { value: skin, size: 4, normalized: true } },
-      // data-only triangulation → real holes where there's no data.
-      indices: { value: base.skinIndices, size: 1 },
     },
     stats: {
       defMin: Number.isFinite(defMin) ? defMin : 0,
@@ -304,6 +297,233 @@ export function buildTerrainMesh(
       n,
     },
   };
+}
+
+/** Cell-edge coordinates: midpoints between centres, ends extrapolated. */
+function edges(c: number[]): number[] {
+  const n = c.length;
+  if (n === 0) return [];
+  if (n === 1) return [c[0] - 5e-4, c[0] + 5e-4];
+  const e = new Array<number>(n + 1);
+  for (let k = 1; k < n; k++) e[k] = (c[k - 1] + c[k]) / 2;
+  e[0] = c[0] - (c[1] - c[0]) / 2;
+  e[n] = c[n - 1] + (c[n - 1] - c[n - 2]) / 2;
+  return e;
+}
+
+/**
+ * Static scaffolding for the deformation drape rendered as one flat quad PER
+ * data cell, centred on the cell's point and spanning to the cell-edge
+ * midpoints — so each point is the centre of its pixel and neighbouring pixels
+ * tile edge-to-edge. Four (unshared) vertices per cell give crisp flat colour.
+ * Rebuilt only when the grid / filter / DEM changes.
+ */
+export interface DrapeBase {
+  /** metre offsets [east, north] per vertex. */
+  xy: Float32Array;
+  /** compact shared-corner index per vertex (for gap-free averaged heights). */
+  cornerId: Int32Array;
+  /** columnar cell index per vertex, for the current-epoch value + colour. */
+  cellK: Int32Array;
+  /** raw DEM elevation (m) per shared corner. */
+  demCorner: Float32Array;
+  indices: Uint32Array;
+  nVerts: number;
+  nCorners: number;
+}
+
+export function buildDrapeBase(
+  grid: GridResponse,
+  visibleIdx: number[],
+  elevSample: (lat: number, lon: number) => number,
+  frame: Frame,
+): DrapeBase {
+  const nLon = grid.lon.length;
+  const latE = edges(grid.lat);
+  const lonE = edges(grid.lon);
+  const mPerDegLon = 111320 * Math.cos((frame.centerLat * Math.PI) / 180);
+  const edgeEast = lonE.map((lo) => (lo - frame.centerLon) * mPerDegLon);
+  const edgeNorth = latE.map((la) => (la - frame.centerLat) * M_PER_DEG_LAT);
+
+  const nV = visibleIdx.length * 4;
+  const xy = new Float32Array(nV * 2);
+  const cornerId = new Int32Array(nV);
+  const cellK = new Int32Array(nV);
+  const indices = new Uint32Array(visibleIdx.length * 6);
+
+  // Compact, de-duplicated corner grid: corners shared between cells get the
+  // same id, so their heights can be averaged and the plates meet with no gap.
+  const cornerMap = new Map<number, number>();
+  const demList: number[] = [];
+  const corner = (r: number, c: number): number => {
+    const key = r * (nLon + 1) + c;
+    let id = cornerMap.get(key);
+    if (id === undefined) {
+      id = demList.length;
+      cornerMap.set(key, id);
+      demList.push(elevSample(latE[r], lonE[c]));
+    }
+    return id;
+  };
+
+  const { i: ci, j: cj } = grid.cells;
+  let vi = 0;
+  let ii = 0;
+  for (const k of visibleIdx) {
+    const i = ci[k];
+    const j = cj[k];
+    const b = vi;
+    // 4 corners: TL(i,j) TR(i,j+1) BL(i+1,j) BR(i+1,j+1)
+    const spec: [number, number, number, number][] = [
+      [edgeEast[j], edgeNorth[i], i, j],
+      [edgeEast[j + 1], edgeNorth[i], i, j + 1],
+      [edgeEast[j], edgeNorth[i + 1], i + 1, j],
+      [edgeEast[j + 1], edgeNorth[i + 1], i + 1, j + 1],
+    ];
+    for (const [e, nth, r, c] of spec) {
+      xy[vi * 2] = e;
+      xy[vi * 2 + 1] = nth;
+      cornerId[vi] = corner(r, c);
+      cellK[vi] = k;
+      vi++;
+    }
+    indices[ii++] = b + 0;
+    indices[ii++] = b + 2;
+    indices[ii++] = b + 1;
+    indices[ii++] = b + 1;
+    indices[ii++] = b + 2;
+    indices[ii++] = b + 3;
+  }
+
+  return {
+    xy,
+    cornerId,
+    cellK,
+    demCorner: Float32Array.from(demList),
+    indices,
+    nVerts: nV,
+    nCorners: demList.length,
+  };
+}
+
+/**
+ * Per-date drape geometry: flat-coloured pixel quads whose SHARED-corner heights
+ * are the average of the deformation of the cells meeting there. Colour stays
+ * flat per cell (crisp pixels) but heights match along shared edges, so the
+ * plates form one continuous, gap-free surface over the deforming ground.
+ */
+export function buildDrapeMesh(
+  db: DrapeBase,
+  valueAt: (k: number) => number | null,
+  lut: ColorLut,
+  terrainExag: number,
+  deformExag: number,
+  deformActive: boolean,
+): TerrainMesh {
+  const nV = db.nVerts;
+  const positions = new Float32Array(nV * 3);
+  const normals = new Float32Array(nV * 3);
+  const texZero = new Float32Array(nV * 2); // no texture; keep attribute present
+  const colors = new Uint8Array(nV * 4);
+
+  // Pass 1: accumulate deformation per shared corner (only cells with a value).
+  const sum = new Float64Array(db.nCorners);
+  const cnt = new Float64Array(db.nCorners);
+  const val = new Float64Array(nV);
+  for (let vi = 0; vi < nV; vi++) {
+    const v = valueAt(db.cellK[vi]);
+    if (v != null) {
+      val[vi] = v;
+      const cid = db.cornerId[vi];
+      sum[cid] += v;
+      cnt[cid] += 1;
+    } else {
+      val[vi] = NaN;
+    }
+  }
+
+  // Pass 2: place each vertex at its corner's averaged height; colour per cell.
+  for (let vi = 0; vi < nV; vi++) {
+    const cid = db.cornerId[vi];
+    const avg = cnt[cid] > 0 ? sum[cid] / cnt[cid] : 0;
+    let z = db.demCorner[cid] * terrainExag;
+    if (deformActive) z += (avg / 1000) * deformExag;
+    positions[vi * 3] = db.xy[vi * 2];
+    positions[vi * 3 + 1] = db.xy[vi * 2 + 1];
+    positions[vi * 3 + 2] = z;
+    normals[vi * 3 + 2] = 1;
+    const v = val[vi];
+    if (!Number.isNaN(v)) {
+      const b = lutBin(lut, v);
+      const o = vi * 4;
+      colors[o] = lut.r[b];
+      colors[o + 1] = lut.g[b];
+      colors[o + 2] = lut.b[b];
+      colors[o + 3] = 255;
+    }
+  }
+
+  return {
+    attributes: {
+      POSITION: { value: positions, size: 3 },
+      NORMAL: { value: normals, size: 3 },
+      TEXCOORD_0: { value: texZero, size: 2 },
+      COLOR_0: { value: colors, size: 4, normalized: true },
+    },
+    indices: { value: db.indices, size: 1 },
+  };
+}
+
+const SMOOTH_R = 2; // fill radius (cells) for the body-height field
+
+/**
+ * Smoothed + hole-filled deformation field for the terrain body's HEIGHT.
+ *
+ * Each data cell spreads its value into a (2R+1)² neighbourhood; every node
+ * then takes the average of the data that reached it. This does two things:
+ *  - it box-averages the field so the body doesn't spike its sharp per-pixel
+ *    peaks up through the smooth drape, and
+ *  - crucially, it BLEEDS deformation into no-data cells inside/around the
+ *    deformation, so those gaps sink with their neighbours instead of standing
+ *    proud and poking terrain up through the drape at high exaggeration.
+ * Nodes with no data anywhere nearby stay NaN (flat DEM).
+ *
+ * Colour and the reported stats always use the raw per-cell values — only the
+ * body's height is smoothed/filled.
+ */
+export function smoothNodeValues(
+  grid: GridResponse,
+  visibleIdx: number[],
+  raw: Float32Array,
+): Float32Array {
+  const nLat = grid.lat.length;
+  const nLon = grid.lon.length;
+  const N = nLat * nLon;
+  const sum = new Float64Array(N);
+  const cnt = new Float64Array(N);
+  const { i: ci, j: cj } = grid.cells;
+
+  for (const k of visibleIdx) {
+    const i = ci[k];
+    const j = cj[k];
+    const v = raw[i * nLon + j];
+    if (!Number.isFinite(v)) continue;
+    for (let di = -SMOOTH_R; di <= SMOOTH_R; di++) {
+      const ii = i + di;
+      if (ii < 0 || ii >= nLat) continue;
+      for (let dj = -SMOOTH_R; dj <= SMOOTH_R; dj++) {
+        const jj = j + dj;
+        if (jj < 0 || jj >= nLon) continue;
+        const t = ii * nLon + jj;
+        sum[t] += v;
+        cnt[t] += 1;
+      }
+    }
+  }
+
+  const out = new Float32Array(N).fill(NaN);
+  for (let t = 0; t < N; t++) if (cnt[t] > 0) out[t] = sum[t] / cnt[t];
+  return out;
 }
 
 /** Scatter the current-epoch value of each visible cell into a full grid array. */

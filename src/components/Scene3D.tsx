@@ -23,10 +23,13 @@ import { buildLut, lutBin, COLOR_LABELS } from "../lib/colormaps";
 import { loadDEM, type DEM } from "../lib/dem";
 import { loadImagery, type Imagery } from "../lib/imagery";
 import {
+  buildDrapeBase,
+  buildDrapeMesh,
   buildFrame,
   buildTerrainBase,
   buildTerrainMesh,
   scatterNodeValues,
+  smoothNodeValues,
   type SurfaceStats,
   type TexExtent,
 } from "../lib/surface";
@@ -36,6 +39,7 @@ import DateSlider from "./DateSlider";
 import {
   ColorByPicker,
   DeformExagSlider,
+  DrapeToggle,
   MapTexturePicker,
   PointsToggle,
   PointSizeSlider,
@@ -133,6 +137,7 @@ function Scene3DControls({ hasData }: { hasData: boolean }) {
             <div className="map-ctl-seg-wrap">
               <MapTexturePicker />
             </div>
+            <DrapeToggle />
             <PointsToggle />
             <div className="map-ctl-sep" />
             <div className="map-ctl-title">Vertical exaggeration</div>
@@ -293,6 +298,7 @@ export default function Scene3D({
     pointSize3d,
     opacity,
     showData,
+    showDrape,
     showPoints,
     mapTexture,
     baseMap,
@@ -383,11 +389,31 @@ export default function Scene3D({
 
   const lut = useMemo(() => buildLut(cmapId, domain), [cmapId, domain]);
 
+  // Smoothed field for the body's height only (colour/stats stay from raw).
+  const nodeValSmooth = useMemo(() => {
+    if (!grid || !nodeVal) return null;
+    return smoothNodeValues(grid, visibleIdx, nodeVal);
+  }, [grid, visibleIdx, nodeVal]);
+
   // Per-date terrain geometry + physical stats.
   const terrain = useMemo(() => {
-    if (!base || !nodeVal) return null;
-    return buildTerrainMesh(base, nodeVal, lut, terrainExag, deformExag, deformActive);
-  }, [base, nodeVal, lut, terrainExag, deformExag, deformActive]);
+    if (!base || !nodeVal || !nodeValSmooth) return null;
+    return buildTerrainMesh(base, nodeValSmooth, nodeVal, lut, terrainExag, deformExag, deformActive);
+  }, [base, nodeVal, nodeValSmooth, lut, terrainExag, deformExag, deformActive]);
+
+  // Static drape scaffolding: one quad per data cell, centred on its point.
+  const drapeBase = useMemo(() => {
+    if (!grid || visibleIdx.length === 0 || !frame) return null;
+    const sample = dem?.elevation ?? (() => 0);
+    return buildDrapeBase(grid, visibleIdx, sample, frame);
+  }, [grid, visibleIdx, dem, frame]);
+
+  // Per-date drape geometry (flat-coloured pixel plates).
+  const drape = useMemo(() => {
+    if (!drapeBase) return null;
+    return buildDrapeMesh(drapeBase, valueOf, lut, terrainExag, deformExag, deformActive);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drapeBase, lut, terrainExag, deformExag, deformActive, dateIdx, valueOf]);
 
   const useSat = mapTexture === "satellite";
   // `null` (not undefined) is deck's "no texture" sentinel; passing undefined
@@ -431,8 +457,12 @@ export default function Scene3D({
 
     const { i, j } = grid!.cells;
     const origin: [number, number, number] = [frame.centerLon, frame.centerLat, 0];
-    // Lift the drape/markers a hair above the terrain to avoid z-fighting.
-    const lift = Math.max(2.5, (base.elevMax - base.elevMin) * terrainExag * 0.008);
+    // Lift the drape/markers above the terrain body to avoid z-fighting. Scale
+    // with the deformation VE: bigger heights → coarser depth precision, so a
+    // little more separation keeps the body from cracking through the drape.
+    const lift =
+      Math.max(2.5, (base.elevMax - base.elevMin) * terrainExag * 0.008) +
+      deformExag * 0.0015;
     const zOf = (k: number): number => {
       const e = base.elevByCell[k];
       const baseZ = (Number.isFinite(e) ? e : 0) * terrainExag;
@@ -459,15 +489,14 @@ export default function Scene3D({
       }),
     );
 
-    // Deformation drape: a connected skin using the exact terrain geometry, so
-    // it hugs and follows the ground. Only over the satellite terrain — in
-    // deformation mode the terrain body itself already carries the colour.
-    if (useSat) {
+    // Deformation drape: one flat-coloured quad per data cell, centred on the
+    // cell's point and tiling with its neighbours, hugging the deforming ground.
+    if (showDrape && drape) {
       result.push(
         new SimpleMeshLayer({
-          id: "deform-skin",
+          id: "deform-drape",
           data: ONE,
-          mesh: terrain.skin,
+          mesh: drape,
           getPosition: () => origin,
           getColor: [255, 255, 255, 255],
           getTranslation: [0, 0, lift],
@@ -559,8 +588,9 @@ export default function Scene3D({
     frame,
     base,
     terrain,
+    drape,
+    showDrape,
     texture,
-    useSat,
     opacity,
     geomKey,
     grid,

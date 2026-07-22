@@ -216,6 +216,21 @@ export function MapTexturePicker() {
   );
 }
 
+/** 3D: toggle the deformation drape (coloured pixel plates on the terrain). */
+export function DrapeToggle() {
+  const { settings, set } = useSettings();
+  return (
+    <label className="map-ctl-row">
+      <input
+        type="checkbox"
+        checked={settings.showDrape}
+        onChange={(e) => set({ showDrape: e.target.checked })}
+      />
+      <span>Deformation drape</span>
+    </label>
+  );
+}
+
 /** 3D: toggle the discrete clickable data points. */
 export function PointsToggle() {
   const { settings, set } = useSettings();

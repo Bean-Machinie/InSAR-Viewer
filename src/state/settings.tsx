@@ -42,6 +42,8 @@ export interface DisplaySettings {
   pointSize3d: number;
   /** 3D: drape satellite imagery on the deforming terrain, or colour it by deformation. */
   mapTexture: MapTexture;
+  /** 3D: draw the deformation drape (coloured pixel plates on the terrain). */
+  showDrape: boolean;
   /** 3D: draw the discrete (clickable) data points. */
   showPoints: boolean;
 }
@@ -59,6 +61,7 @@ const DEFAULTS: DisplaySettings = {
   terrainExag: 1.5,
   pointSize3d: 3,
   mapTexture: "satellite",
+  showDrape: true,
   showPoints: false,
 };
 
@@ -96,6 +99,7 @@ function load(): DisplaySettings {
     s.pointSize3d = num(s.pointSize3d, 1, 10, DEFAULTS.pointSize3d);
     if (s.mapTexture !== "satellite" && s.mapTexture !== "deformation")
       s.mapTexture = DEFAULTS.mapTexture;
+    if (typeof s.showDrape !== "boolean") s.showDrape = DEFAULTS.showDrape;
     if (typeof s.showPoints !== "boolean") s.showPoints = DEFAULTS.showPoints;
     return s;
   } catch {
