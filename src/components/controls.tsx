@@ -129,3 +129,84 @@ export function OpacitySlider() {
     </label>
   );
 }
+
+/** 2D map ⇄ 3D terrain scene. */
+export function ViewModePicker() {
+  const { settings, set } = useSettings();
+  return (
+    <div className="segmented">
+      <button
+        className={settings.viewMode === "2d" ? "seg-btn active" : "seg-btn"}
+        onClick={() => set({ viewMode: "2d" })}
+      >
+        2D map
+      </button>
+      <button
+        className={settings.viewMode === "3d" ? "seg-btn active" : "seg-btn"}
+        onClick={() => set({ viewMode: "3d" })}
+      >
+        3D terrain
+      </button>
+    </div>
+  );
+}
+
+/** 3D: how strongly deformation displaces the ground vertically. */
+export function DeformExagSlider() {
+  const { settings, set } = useSettings();
+  return (
+    <label className="slider-row">
+      <span className="slider-label">
+        Deformation gain <b>×{settings.deformExag.toLocaleString()}</b>
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={12000}
+        step={100}
+        value={settings.deformExag}
+        onChange={(e) => set({ deformExag: Number(e.target.value) })}
+      />
+    </label>
+  );
+}
+
+/** 3D: relief multiplier on the real DEM. */
+export function TerrainExagSlider() {
+  const { settings, set } = useSettings();
+  return (
+    <label className="slider-row">
+      <span className="slider-label">
+        Terrain relief <b>×{settings.terrainExag.toFixed(1)}</b>
+      </span>
+      <input
+        type="range"
+        min={1}
+        max={4}
+        step={0.1}
+        value={settings.terrainExag}
+        onChange={(e) => set({ terrainExag: Number(e.target.value) })}
+      />
+    </label>
+  );
+}
+
+/** 3D: deformation point radius. */
+export function PointSizeSlider() {
+  const { settings, set } = useSettings();
+  return (
+    <label className="slider-row">
+      <span className="slider-label">
+        Point size <b>{settings.pointSize3d.toFixed(0)}px</b>
+      </span>
+      <input
+        type="range"
+        min={1}
+        max={8}
+        step={0.5}
+        value={settings.pointSize3d}
+        onChange={(e) => set({ pointSize3d: Number(e.target.value) })}
+      />
+    </label>
+  );
+}

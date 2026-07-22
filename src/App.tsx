@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
 import type {
   DisplacementResponse,
@@ -13,10 +13,14 @@ import MapView from "./components/MapView";
 import SidePanel from "./components/SidePanel";
 import TimeSeriesPanel from "./components/TimeSeriesPanel";
 
+// deck.gl is heavy (~1 MB); only pull it in when the 3D view is first opened,
+// so the default 2D map stays light to load.
+const Scene3D = lazy(() => import("./components/Scene3D"));
+
 export default function App() {
   // Display settings (colorBy, colormap, clip, shape, …) live in context
   const { settings } = useSettings();
-  const { colorBy, clipPct, showData } = settings;
+  const { colorBy, clipPct, showData, viewMode } = settings;
 
   // Projects
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -305,21 +309,46 @@ export default function App() {
         gridLoading={gridLoading}
       />
       <main className="main">
-        <MapView
-          bounds={detail?.bounds ?? null}
-          grid={grid}
-          visibleIdx={visibleIdx}
-          valueOf={valueOf}
-          domain={domain}
-          selected={selectedCell}
-          onPickCell={onPickCell}
-          overlayMessage={overlayMessage}
-          gridLoading={gridLoading}
-          dispDates={disp?.dates ?? null}
-          dateIdx={dateIdx}
-          onDateIdx={setDateIdx}
-          dispLoading={colorBy === "disp" && dispLoading}
-        />
+        {viewMode === "3d" ? (
+          <Suspense
+            fallback={
+              <div className="deck-wrap">
+                <div className="map-loading">Loading 3D engine…</div>
+              </div>
+            }
+          >
+            <Scene3D
+              bounds={detail?.bounds ?? null}
+              grid={grid}
+              visibleIdx={visibleIdx}
+              valueOf={valueOf}
+              domain={domain}
+              disp={disp}
+              dateIdx={dateIdx}
+              onDateIdx={setDateIdx}
+              dispLoading={colorBy === "disp" && dispLoading}
+              selected={selectedCell}
+              onPickCell={onPickCell}
+              overlayMessage={overlayMessage}
+            />
+          </Suspense>
+        ) : (
+          <MapView
+            bounds={detail?.bounds ?? null}
+            grid={grid}
+            visibleIdx={visibleIdx}
+            valueOf={valueOf}
+            domain={domain}
+            selected={selectedCell}
+            onPickCell={onPickCell}
+            overlayMessage={overlayMessage}
+            gridLoading={gridLoading}
+            dispDates={disp?.dates ?? null}
+            dateIdx={dateIdx}
+            onDateIdx={setDateIdx}
+            dispLoading={colorBy === "disp" && dispLoading}
+          />
+        )}
         {tsOpen && (
           <TimeSeriesPanel
             data={ts}

@@ -11,6 +11,7 @@ import { DEFAULT_COLORMAP, COLORMAPS } from "../lib/colormaps";
 import { SHAPES, type PixelShape } from "../lib/shapes";
 
 export type BaseMap = "esri" | "osm";
+export type ViewMode = "2d" | "3d";
 
 /**
  * All display/view options in one object. To add a new option:
@@ -29,6 +30,14 @@ export interface DisplaySettings {
   pixelShape: PixelShape;
   /** Data overlay opacity, 0.2–1. */
   opacity: number;
+  /** 2D Leaflet map or 3D deck.gl terrain scene. */
+  viewMode: ViewMode;
+  /** 3D: mm→scene-metre gain for deformation (how far the ground moves). */
+  deformExag: number;
+  /** 3D: multiplier on real DEM relief so topography reads clearly. */
+  terrainExag: number;
+  /** 3D: deformation point radius in pixels. */
+  pointSize3d: number;
 }
 
 const DEFAULTS: DisplaySettings = {
@@ -39,9 +48,20 @@ const DEFAULTS: DisplaySettings = {
   clipPct: 98,
   pixelShape: "square",
   opacity: 0.9,
+  viewMode: "2d",
+  deformExag: 3000,
+  terrainExag: 1.5,
+  pointSize3d: 3,
 };
 
 const COLOR_BYS: readonly ColorBy[] = ["vel", "coh", "rmse", "disp"];
+
+/** Clamp a possibly-corrupt persisted number into [lo, hi], else fall back. */
+function num(v: unknown, lo: number, hi: number, dflt: number): number {
+  return typeof v === "number" && Number.isFinite(v)
+    ? Math.min(hi, Math.max(lo, v))
+    : dflt;
+}
 
 const STORAGE_KEY = "insar-viewer.display";
 
@@ -62,6 +82,10 @@ function load(): DisplaySettings {
     if (!SHAPES[s.pixelShape]) s.pixelShape = DEFAULTS.pixelShape;
     if (!COLOR_BYS.includes(s.colorBy)) s.colorBy = DEFAULTS.colorBy;
     if (s.baseMap !== "esri" && s.baseMap !== "osm") s.baseMap = DEFAULTS.baseMap;
+    if (s.viewMode !== "2d" && s.viewMode !== "3d") s.viewMode = DEFAULTS.viewMode;
+    s.deformExag = num(s.deformExag, 0, 20000, DEFAULTS.deformExag);
+    s.terrainExag = num(s.terrainExag, 1, 5, DEFAULTS.terrainExag);
+    s.pointSize3d = num(s.pointSize3d, 1, 10, DEFAULTS.pointSize3d);
     return s;
   } catch {
     return DEFAULTS;

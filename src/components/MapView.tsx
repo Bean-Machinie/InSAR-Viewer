@@ -3,9 +3,10 @@ import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import type { Bounds, GridResponse } from "../api/types";
 import type { Domain } from "../lib/stats";
 import { useSettings } from "../state/settings";
-import { BaseMapPicker, ColorByPicker, ShowDataToggle } from "./controls";
+import { BaseMapPicker, ColorByPicker, ShowDataToggle, ViewModePicker } from "./controls";
 import GridLayer from "./GridLayer";
 import Legend from "./Legend";
+import DateSlider from "./DateSlider";
 
 const ESRI_URL =
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
@@ -51,7 +52,7 @@ function MapControls({ hasData }: { hasData: boolean }) {
       ) : (
         <div className="map-ctl-panel">
           <div className="map-ctl-head">
-            <span className="map-ctl-title">Base map</span>
+            <span className="map-ctl-title">View</span>
             <button
               className="map-ctl-close"
               aria-label="Collapse"
@@ -60,6 +61,11 @@ function MapControls({ hasData }: { hasData: boolean }) {
               ✕
             </button>
           </div>
+          <div className="map-ctl-seg-wrap">
+            <ViewModePicker />
+          </div>
+          <div className="map-ctl-sep" />
+          <div className="map-ctl-title">Base map</div>
           <BaseMapPicker />
           {hasData && (
             <>
@@ -73,70 +79,6 @@ function MapControls({ hasData }: { hasData: boolean }) {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * Bottom-centred timeline for the Displacement layer. Slide (or play) across
- * epochs to watch deformation accumulate; the colour scale stays pinned to
- * the final date, so the reference date reads as ~0 (white). Rendered as a
- * sibling overlay (not a Leaflet control), so dragging it never pans the map.
- */
-function DateSlider({
-  dates,
-  idx,
-  onIdx,
-}: {
-  dates: string[];
-  idx: number;
-  onIdx: Dispatch<SetStateAction<number>>;
-}) {
-  const [playing, setPlaying] = useState(false);
-  const last = dates.length - 1;
-  const clamped = Math.min(Math.max(idx, 0), last);
-
-  useEffect(() => {
-    if (!playing || dates.length < 2) return;
-    const id = window.setInterval(() => {
-      onIdx((prev) => (prev >= last ? 0 : prev + 1));
-    }, 650);
-    return () => window.clearInterval(id);
-  }, [playing, last, dates.length, onIdx]);
-
-  return (
-    <div className="date-slider" onDoubleClick={(e) => e.stopPropagation()}>
-      <button
-        className="date-play"
-        onClick={() => setPlaying((p) => !p)}
-        title={playing ? "Pause" : "Play through dates"}
-        disabled={dates.length < 2}
-      >
-        {playing ? "❚❚" : "▶"}
-      </button>
-      <div className="date-slider-main">
-        <div className="date-current">
-          <span className="date-value">{dates[clamped]}</span>
-          <span className="date-count">
-            {clamped + 1} / {dates.length}
-          </span>
-        </div>
-        <input
-          type="range"
-          min={0}
-          max={last}
-          step={1}
-          value={clamped}
-          onChange={(e) => {
-            setPlaying(false);
-            onIdx(Number(e.target.value));
-          }}
-        />
-        <div className="date-ends">
-          <span>{dates[0]}</span>
-          <span>{dates[last]}</span>
-        </div>
-      </div>
     </div>
   );
 }
