@@ -151,13 +151,17 @@ export function ViewModePicker() {
   );
 }
 
-/** 3D: how strongly deformation displaces the ground vertically. */
+/**
+ * 3D: deformation vertical exaggeration. This value IS the physical
+ * exaggeration factor — screen height added per unit real displacement — so
+ * it's reported verbatim in the scale panel (e.g. ×3000 = 1 mm → 3 m).
+ */
 export function DeformExagSlider() {
   const { settings, set } = useSettings();
   return (
     <label className="slider-row">
       <span className="slider-label">
-        Deformation gain <b>×{settings.deformExag.toLocaleString()}</b>
+        Deformation VE <b>×{settings.deformExag.toLocaleString()}</b>
       </span>
       <input
         type="range"
@@ -171,13 +175,13 @@ export function DeformExagSlider() {
   );
 }
 
-/** 3D: relief multiplier on the real DEM. */
+/** 3D: terrain vertical exaggeration (relief multiplier on the real DEM). */
 export function TerrainExagSlider() {
   const { settings, set } = useSettings();
   return (
     <label className="slider-row">
       <span className="slider-label">
-        Terrain relief <b>×{settings.terrainExag.toFixed(1)}</b>
+        Terrain VE <b>×{settings.terrainExag.toFixed(1)}</b>
       </span>
       <input
         type="range"
@@ -187,6 +191,42 @@ export function TerrainExagSlider() {
         value={settings.terrainExag}
         onChange={(e) => set({ terrainExag: Number(e.target.value) })}
       />
+    </label>
+  );
+}
+
+/** 3D: how the deforming terrain is surfaced — satellite drape or deformation colour. */
+export function MapTexturePicker() {
+  const { settings, set } = useSettings();
+  return (
+    <div className="segmented">
+      <button
+        className={settings.mapTexture === "satellite" ? "seg-btn active" : "seg-btn"}
+        onClick={() => set({ mapTexture: "satellite" })}
+      >
+        Satellite
+      </button>
+      <button
+        className={settings.mapTexture === "deformation" ? "seg-btn active" : "seg-btn"}
+        onClick={() => set({ mapTexture: "deformation" })}
+      >
+        Deformation
+      </button>
+    </div>
+  );
+}
+
+/** 3D: toggle the discrete clickable data points. */
+export function PointsToggle() {
+  const { settings, set } = useSettings();
+  return (
+    <label className="map-ctl-row">
+      <input
+        type="checkbox"
+        checked={settings.showPoints}
+        onChange={(e) => set({ showPoints: e.target.checked })}
+      />
+      <span>Data points</span>
     </label>
   );
 }

@@ -12,6 +12,8 @@ import { SHAPES, type PixelShape } from "../lib/shapes";
 
 export type BaseMap = "esri" | "osm";
 export type ViewMode = "2d" | "3d";
+/** How the 3D deforming terrain is surfaced. */
+export type MapTexture = "satellite" | "deformation";
 
 /**
  * All display/view options in one object. To add a new option:
@@ -38,6 +40,10 @@ export interface DisplaySettings {
   terrainExag: number;
   /** 3D: deformation point radius in pixels. */
   pointSize3d: number;
+  /** 3D: drape satellite imagery on the deforming terrain, or colour it by deformation. */
+  mapTexture: MapTexture;
+  /** 3D: draw the discrete (clickable) data points. */
+  showPoints: boolean;
 }
 
 const DEFAULTS: DisplaySettings = {
@@ -52,6 +58,8 @@ const DEFAULTS: DisplaySettings = {
   deformExag: 3000,
   terrainExag: 1.5,
   pointSize3d: 3,
+  mapTexture: "satellite",
+  showPoints: true,
 };
 
 const COLOR_BYS: readonly ColorBy[] = ["vel", "coh", "rmse", "disp"];
@@ -86,6 +94,9 @@ function load(): DisplaySettings {
     s.deformExag = num(s.deformExag, 0, 20000, DEFAULTS.deformExag);
     s.terrainExag = num(s.terrainExag, 1, 5, DEFAULTS.terrainExag);
     s.pointSize3d = num(s.pointSize3d, 1, 10, DEFAULTS.pointSize3d);
+    if (s.mapTexture !== "satellite" && s.mapTexture !== "deformation")
+      s.mapTexture = DEFAULTS.mapTexture;
+    if (typeof s.showPoints !== "boolean") s.showPoints = DEFAULTS.showPoints;
     return s;
   } catch {
     return DEFAULTS;

@@ -850,3 +850,68 @@ input[type="range"]::-moz-range-thumb {
   font-size: 12px;
   pointer-events: none;
 }
+
+/* Physical-scale panel (top-left): real, un-exaggerated numbers */
+.scale-panel {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 900;
+  width: 232px;
+  background: rgba(18, 18, 22, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.scale-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.scale-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  margin: 3px 0;
+}
+
+.scale-row span {
+  color: var(--text-dim);
+}
+
+.scale-row b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.scale-sub {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  margin: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.scale-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 8px -12px;
+}
+
+.scale-note {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}

@@ -31,14 +31,22 @@ export interface DEM {
   tiles: number;
 }
 
-// --- Web-Mercator pixel projection (global pixel coords at a given zoom) ---
+// --- Web-Mercator projection ---
+/** Normalised Web-Mercator X in [0, 1] (0 = 180°W, 1 = 180°E). */
+export function webMercX(lon: number): number {
+  return (lon + 180) / 360;
+}
+/** Normalised Web-Mercator Y in [0, 1] (0 = north edge, 1 = south edge). */
+export function webMercY(lat: number): number {
+  const s = Math.sin((lat * Math.PI) / 180);
+  return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+}
+// Global pixel coords at a given zoom.
 function lonToPx(lon: number, z: number): number {
-  return ((lon + 180) / 360) * TILE * 2 ** z;
+  return webMercX(lon) * TILE * 2 ** z;
 }
 function latToPx(lat: number, z: number): number {
-  const s = Math.sin((lat * Math.PI) / 180);
-  const y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
-  return y * TILE * 2 ** z;
+  return webMercY(lat) * TILE * 2 ** z;
 }
 
 function tileRange(bounds: Bounds, z: number) {

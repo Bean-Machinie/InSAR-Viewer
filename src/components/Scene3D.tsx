@@ -6,8 +6,8 @@ import {
   type SetStateAction,
 } from "react";
 import DeckGL from "@deck.gl/react";
-import { TerrainLayer } from "@deck.gl/geo-layers";
 import { PointCloudLayer } from "@deck.gl/layers";
+import { SimpleMeshLayer } from "@deck.gl/mesh-layers";
 import {
   COORDINATE_SYSTEM,
   Layer,
@@ -18,34 +18,37 @@ import {
 } from "@deck.gl/core";
 import type { Bounds, DisplacementResponse, GridResponse } from "../api/types";
 import type { Domain } from "../lib/stats";
-import { buildLut, lutBin } from "../lib/colormaps";
+import { buildLut, lutBin, COLOR_LABELS } from "../lib/colormaps";
 import { loadDEM, type DEM } from "../lib/dem";
+import { loadImagery, type Imagery } from "../lib/imagery";
+import {
+  buildFrame,
+  buildTerrainBase,
+  buildTerrainMesh,
+  scatterNodeValues,
+  type SurfaceStats,
+  type TexExtent,
+} from "../lib/surface";
 import { useSettings } from "../state/settings";
 import Legend from "./Legend";
 import DateSlider from "./DateSlider";
 import {
   ColorByPicker,
   DeformExagSlider,
+  MapTexturePicker,
+  PointsToggle,
   PointSizeSlider,
   ShowDataToggle,
   TerrainExagSlider,
   ViewModePicker,
 } from "./controls";
 
-const TERRARIUM_URL =
-  "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
-const ESRI_TEXTURE =
-  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
-const OSM_TEXTURE = "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png";
-
-/** Small lift (scene metres) so on-surface points aren't buried by the mesh. */
-const SURFACE_LIFT = 4;
+const ONE = [0];
 
 interface Props {
   bounds: Bounds | null;
   grid: GridResponse | null;
   visibleIdx: number[];
-  /** Active-layer value per cell (mm for displacement); null → transparent. */
   valueOf: (cellIdx: number) => number | null;
   domain: Domain;
   disp: DisplacementResponse | null;
@@ -57,7 +60,6 @@ interface Props {
   overlayMessage: string | null;
 }
 
-/** Oblique camera framing the project's bounds. */
 function fitView(bounds: Bounds): MapViewState {
   const width = Math.max(window.innerWidth - 320, 400);
   const height = Math.max(window.innerHeight, 400);
@@ -70,13 +72,7 @@ function fitView(bounds: Bounds): MapViewState {
       ],
       { padding: 60 },
     );
-    return {
-      longitude,
-      latitude,
-      zoom: Math.min(zoom, 16),
-      pitch: 55,
-      bearing: -20,
-    };
+    return { longitude, latitude, zoom: Math.min(zoom, 16), pitch: 55, bearing: -20 };
   } catch {
     return {
       longitude: (bounds.lon_min + bounds.lon_max) / 2,
@@ -88,17 +84,20 @@ function fitView(bounds: Bounds): MapViewState {
   }
 }
 
-/** Collapsible top-right control panel for the 3D scene. */
+function fmt(x: number, nd = 1): string {
+  if (!Number.isFinite(x)) return "—";
+  const ax = Math.abs(x);
+  if (ax >= 1000) return x.toFixed(0);
+  if (ax >= 10) return x.toFixed(nd);
+  return x.toFixed(nd + 1);
+}
+
 function Scene3DControls({ hasData }: { hasData: boolean }) {
   const [open, setOpen] = useState(true);
   if (!open) {
     return (
       <div className="map-ctl">
-        <button
-          className="map-ctl-btn"
-          title="3D display options"
-          onClick={() => setOpen(true)}
-        >
+        <button className="map-ctl-btn" title="3D display options" onClick={() => setOpen(true)}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
             <path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z" />
             <path d="M3 7l9 5 9-5" />
@@ -113,11 +112,7 @@ function Scene3DControls({ hasData }: { hasData: boolean }) {
       <div className="map-ctl-panel">
         <div className="map-ctl-head">
           <span className="map-ctl-title">View</span>
-          <button
-            className="map-ctl-close"
-            aria-label="Collapse"
-            onClick={() => setOpen(false)}
-          >
+          <button className="map-ctl-close" aria-label="Collapse" onClick={() => setOpen(false)}>
             ✕
           </button>
         </div>
@@ -133,7 +128,13 @@ function Scene3DControls({ hasData }: { hasData: boolean }) {
               <ColorByPicker />
             </div>
             <div className="map-ctl-sep" />
-            <div className="map-ctl-title">3D</div>
+            <div className="map-ctl-title">Terrain surface</div>
+            <div className="map-ctl-seg-wrap">
+              <MapTexturePicker />
+            </div>
+            <PointsToggle />
+            <div className="map-ctl-sep" />
+            <div className="map-ctl-title">Vertical exaggeration</div>
             <TerrainExagSlider />
             <DeformExagSlider />
             <PointSizeSlider />
@@ -144,13 +145,130 @@ function Scene3DControls({ hasData }: { hasData: boolean }) {
   );
 }
 
+function ScalePanel({
+  colorBy,
+  terrainExag,
+  deformExag,
+  elevMin,
+  elevMax,
+  stats,
+  widthKm,
+  heightKm,
+  dem,
+  imagery,
+  useSat,
+  refDate,
+  curDate,
+}: {
+  colorBy: string;
+  terrainExag: number;
+  deformExag: number;
+  elevMin: number;
+  elevMax: number;
+  stats: SurfaceStats | null;
+  widthKm: number;
+  heightKm: number;
+  dem: DEM | null;
+  imagery: Imagery | null;
+  useSat: boolean;
+  refDate: string | null;
+  curDate: string | null;
+}) {
+  const isDisp = colorBy === "disp";
+  const label = COLOR_LABELS[colorBy as keyof typeof COLOR_LABELS];
+  const mPerMm = deformExag / 1000;
+  const peakScreen = stats ? (stats.defPeakAbs / 1000) * deformExag : 0;
+  return (
+    <div className="scale-panel">
+      <div className="scale-title">Physical scale</div>
+
+      <div className="scale-row">
+        <span>Terrain VE</span>
+        <b>×{terrainExag.toFixed(1)}</b>
+      </div>
+      {isDisp && (
+        <div className="scale-row">
+          <span>Deformation VE</span>
+          <b>×{deformExag.toLocaleString()}</b>
+        </div>
+      )}
+      {isDisp && deformExag > 0 && (
+        <div className="scale-sub">1 mm motion → {fmt(mPerMm)} m on screen</div>
+      )}
+
+      <div className="scale-sep" />
+
+      <div className="scale-row">
+        <span>Terrain relief (real)</span>
+        <b>
+          {fmt(elevMin, 0)}–{fmt(elevMax, 0)} m
+        </b>
+      </div>
+
+      {isDisp ? (
+        <>
+          <div className="scale-row">
+            <span>Displacement this date</span>
+            <b>{stats ? `${fmt(stats.defMin)} … ${fmt(stats.defMax)}` : "—"} mm</b>
+          </div>
+          <div className="scale-row">
+            <span>Peak |motion|</span>
+            <b>{stats ? fmt(stats.defPeakAbs) : "—"} mm</b>
+          </div>
+          <div className="scale-sub">peak shown as {fmt(peakScreen)} m of vertical relief</div>
+        </>
+      ) : (
+        label && (
+          <div className="scale-sub">
+            {label.title}
+            {label.units ? ` (${label.units})` : ""} — colour only, ground stays
+            flat (no time dimension)
+          </div>
+        )
+      )}
+
+      <div className="scale-sep" />
+
+      <div className="scale-row">
+        <span>Area extent</span>
+        <b>
+          {fmt(widthKm)} × {fmt(heightKm)} km
+        </b>
+      </div>
+      <div className="scale-sub">
+        DEM:{" "}
+        {dem ? (dem.ok ? `Terrarium · z${dem.zoom} · ${dem.tiles} tiles` : "flat (unavailable)") : "loading…"}
+      </div>
+      <div className="scale-sub">
+        Imagery:{" "}
+        {useSat
+          ? imagery
+            ? imagery.ok
+              ? `satellite · z${imagery.zoom} · ${imagery.tiles} tiles`
+              : "unavailable → deformation colour"
+            : "loading…"
+          : "deformation colour"}
+      </div>
+      {isDisp && curDate && (
+        <div className="scale-sub">
+          {refDate ? `ref ${refDate} → ` : ""}
+          {curDate}
+        </div>
+      )}
+      <div className="scale-note">
+        Vertical is exaggerated; terrain and deformation use different factors.
+        Horizontal is true scale.
+      </div>
+    </div>
+  );
+}
+
 /**
- * 3D terrain scene (deck.gl). Real topography comes from AWS Terrarium DEM
- * tiles with satellite imagery draped over it; the deformation is a coloured
- * point cloud sitting on that terrain. In the Displacement layer the date
- * slider drives each point's vertical position, so playing time makes the
- * ground visibly sink (subsidence) or rise (uplift) — the same slider that
- * recolours the 2D map here deforms the 3D landscape.
+ * 3D terrain scene (deck.gl). The terrain is a single mesh built from the grid:
+ * every vertex sits at DEM·terrainVE + displacement(date)/1000·deformVE and is
+ * draped with satellite imagery (or coloured by deformation). Sliding the date
+ * moves the actual ground — subsidence sinks it, uplift raises it — and the
+ * points ride on the same surface. The scale panel reports the real numbers.
  */
 export default function Scene3D({
   bounds,
@@ -167,17 +285,29 @@ export default function Scene3D({
   overlayMessage,
 }: Props) {
   const { settings } = useSettings();
-  const { colorBy, deformExag, terrainExag, pointSize3d, opacity, showData } = settings;
+  const {
+    colorBy,
+    deformExag,
+    terrainExag,
+    pointSize3d,
+    opacity,
+    showData,
+    showPoints,
+    mapTexture,
+    baseMap,
+  } = settings;
   const cmapId = settings.colormap[colorBy];
   const deformActive = colorBy === "disp";
-  const baseMapTexture = settings.baseMap === "osm" ? OSM_TEXTURE : ESRI_TEXTURE;
 
-  // --- DEM: fetched once per project bounds -------------------------------
   const boundsKey = bounds
     ? `${bounds.lat_min},${bounds.lat_max},${bounds.lon_min},${bounds.lon_max}`
     : "none";
+
+  // --- DEM + imagery, fetched per project bounds --------------------------
   const [dem, setDem] = useState<DEM | null>(null);
   const [demLoading, setDemLoading] = useState(false);
+  const [imagery, setImagery] = useState<Imagery | null>(null);
+  const [imgLoading, setImgLoading] = useState(false);
 
   useEffect(() => {
     if (!bounds) {
@@ -198,63 +328,109 @@ export default function Scene3D({
     };
   }, [boundsKey]);
 
-  // Per-cell base terrain elevation (raw metres), aligned to grid.cells.
-  const elev = useMemo(() => {
-    if (!grid) return new Float32Array(0);
-    const { i, j } = grid.cells;
-    const out = new Float32Array(i.length);
-    const sample = dem?.elevation;
-    if (sample) {
-      for (let k = 0; k < i.length; k++) out[k] = sample(grid.lat[i[k]], grid.lon[j[k]]);
+  useEffect(() => {
+    if (!bounds) {
+      setImagery(null);
+      return;
     }
-    return out;
-  }, [grid, dem]);
+    let cancelled = false;
+    setImagery(null);
+    setImgLoading(true);
+    loadImagery(bounds, baseMap).then((im) => {
+      if (!cancelled) {
+        setImagery(im);
+        setImgLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [boundsKey, baseMap]);
+
+  const frame = useMemo(() => (grid ? buildFrame(grid.lat, grid.lon) : null), [grid]);
+
+  // Texture extent: imagery's tile-aligned box, or the grid extent as a
+  // placeholder when imagery isn't loaded (UVs are unused in colour mode).
+  const texExtent = useMemo<TexExtent | null>(() => {
+    if (imagery && imagery.ok) {
+      return { west: imagery.west, east: imagery.east, north: imagery.north, south: imagery.south };
+    }
+    if (!grid) return null;
+    const lat = grid.lat;
+    const lon = grid.lon;
+    return {
+      west: Math.min(lon[0], lon[lon.length - 1]),
+      east: Math.max(lon[0], lon[lon.length - 1]),
+      north: Math.max(lat[0], lat[lat.length - 1]),
+      south: Math.min(lat[0], lat[lat.length - 1]),
+    };
+  }, [imagery, grid]);
+
+  // Static terrain scaffolding (positions, elevation, UVs, indices).
+  const base = useMemo(() => {
+    if (!grid || visibleIdx.length === 0 || !texExtent) return null;
+    const sample = dem?.elevation ?? (() => 0);
+    return buildTerrainBase(grid, visibleIdx, sample, texExtent);
+  }, [grid, visibleIdx, dem, texExtent]);
+
+  // Current-epoch value per grid cell.
+  const nodeVal = useMemo(() => {
+    if (!grid) return null;
+    return scatterNodeValues(grid, visibleIdx, valueOf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid, visibleIdx, valueOf, dateIdx]);
 
   const lut = useMemo(() => buildLut(cmapId, domain), [cmapId, domain]);
 
-  // A single key that changes whenever any point attribute would change, so
-  // deck.gl recomputes the cloud only when it must (data/DEM/date/exag/style).
+  // Per-date terrain geometry + physical stats.
+  const terrain = useMemo(() => {
+    if (!base || !nodeVal) return null;
+    return buildTerrainMesh(base, nodeVal, lut, terrainExag, deformExag, deformActive);
+  }, [base, nodeVal, lut, terrainExag, deformExag, deformActive]);
+
+  const useSat = mapTexture === "satellite";
+  const texture = useSat && imagery && imagery.ok ? imagery.canvas : undefined;
   const geomKey = `${boundsKey}|${grid?.count ?? 0}|${dem?.zoom ?? "flat"}|${dem?.ok}`;
   const alpha = Math.round(opacity * 255);
 
   const layers = useMemo(() => {
-    if (!bounds) return [];
+    const result: Layer[] = [];
+    if (!showData || !bounds || !frame || !base || !terrain) return result;
 
-    const terrain = new TerrainLayer({
-      id: "terrain",
-      minZoom: 0,
-      maxZoom: 15,
-      // Terrarium decode, pre-multiplied by the relief exaggeration:
-      //   h = (R*256 + G + B/256) - 32768, scaled by terrainExag.
-      elevationDecoder: {
-        rScaler: 256 * terrainExag,
-        gScaler: terrainExag,
-        bScaler: terrainExag / 256,
-        offset: -32768 * terrainExag,
-      },
-      elevationData: TERRARIUM_URL,
-      texture: baseMapTexture,
-      color: [255, 255, 255],
-      loadOptions: { image: { type: "imagebitmap" } },
-    });
+    // The terrain IS the map: one mesh, DEM + deformation, satellite-draped.
+    result.push(
+      new SimpleMeshLayer({
+        id: "terrain",
+        data: ONE,
+        mesh: terrain.mesh,
+        texture,
+        getPosition: () => [frame.centerLon, frame.centerLat, 0],
+        getColor: [255, 255, 255, 255],
+        material: false,
+        opacity,
+        pickable: false,
+      }),
+    );
 
-    const result: Layer[] = [terrain];
-
-    if (showData && grid && visibleIdx.length > 0) {
-      const { i, j } = grid.cells;
-      const getZ = (k: number): number => {
-        const base = elev[k] * terrainExag + SURFACE_LIFT;
-        if (!deformActive) return base;
-        const v = valueOf(k); // mm at the current epoch
-        return v == null ? base : base + (v / 1000) * deformExag;
+    // Clickable data points, riding on the same surface heights.
+    if (showPoints && visibleIdx.length > 0) {
+      const { i, j } = grid!.cells;
+      const origin: [number, number, number] = [frame.centerLon, frame.centerLat, 0];
+      const zOf = (k: number): number => {
+        const e = base.elevByCell[k];
+        const baseZ = (Number.isFinite(e) ? e : 0) * terrainExag;
+        if (!deformActive) return baseZ;
+        const v = valueOf(k);
+        return v == null ? baseZ : baseZ + (v / 1000) * deformExag;
       };
 
       result.push(
         new PointCloudLayer<number>({
-          id: "deform",
+          id: "points",
           data: visibleIdx,
-          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPosition: (k: number) => [grid.lon[j[k]], grid.lat[i[k]], getZ(k)],
+          coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
+          coordinateOrigin: origin,
+          getPosition: (k: number) => [frame.east[j[k]], frame.north[i[k]], zOf(k) + 1],
           getColor: (k: number): [number, number, number, number] => {
             const v = valueOf(k);
             if (v == null) return [0, 0, 0, 0];
@@ -273,16 +449,17 @@ export default function Scene3D({
       );
 
       if (selected) {
-        const sk = grid.cells.i.findIndex(
-          (ii, k) => ii === selected.i && grid.cells.j[k] === selected.j,
+        const sk = grid!.cells.i.findIndex(
+          (ii, k) => ii === selected.i && grid!.cells.j[k] === selected.j,
         );
         if (sk >= 0) {
           result.push(
             new PointCloudLayer<number>({
-              id: "deform-selected",
+              id: "points-selected",
               data: [sk],
-              coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-              getPosition: (k: number) => [grid.lon[j[k]], grid.lat[i[k]], getZ(k) + 2],
+              coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
+              coordinateOrigin: origin,
+              getPosition: (k: number) => [frame.east[j[k]], frame.north[i[k]], zOf(k) + 4],
               getColor: [255, 255, 255, 255],
               pointSize: pointSize3d + 5,
               sizeUnits: "pixels",
@@ -299,12 +476,17 @@ export default function Scene3D({
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    showData,
     bounds,
+    frame,
+    base,
+    terrain,
+    texture,
+    opacity,
     geomKey,
     grid,
+    showPoints,
     visibleIdx,
-    showData,
-    elev,
     lut,
     deformActive,
     dateIdx,
@@ -316,17 +498,24 @@ export default function Scene3D({
     domain.min,
     domain.max,
     colorBy,
-    baseMapTexture,
     selected,
     valueOf,
   ]);
 
   const initialViewState = useMemo(
-    () => (bounds ? fitView(bounds) : { longitude: 12.45, latitude: 55.68, zoom: 9, pitch: 55, bearing: -20 }),
+    () =>
+      bounds
+        ? fitView(bounds)
+        : { longitude: 12.45, latitude: 55.68, zoom: 9, pitch: 55, bearing: -20 },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [boundsKey],
   );
 
   const showTimeline = deformActive && disp !== null && disp.dates.length > 0;
+  const curDate = showTimeline
+    ? disp!.dates[Math.min(Math.max(dateIdx, 0), disp!.dates.length - 1)]
+    : null;
+  const satFailed = useSat && imagery !== null && !imagery.ok;
 
   return (
     <div className="deck-wrap">
@@ -340,7 +529,7 @@ export default function Scene3D({
           isDragging ? "grabbing" : isHovering ? "pointer" : "grab"
         }
         onClick={(info: PickingInfo) => {
-          if (info.layer?.id === "deform" && typeof info.object === "number") {
+          if (info.layer?.id === "points" && typeof info.object === "number") {
             onPickCell(info.object);
           }
         }}
@@ -350,23 +539,43 @@ export default function Scene3D({
 
       {showData && grid !== null && visibleIdx.length > 0 && <Legend domain={domain} />}
 
-      {(demLoading || (deformActive && dispLoading)) && (
+      {showData && grid !== null && visibleIdx.length > 0 && frame && (
+        <ScalePanel
+          colorBy={colorBy}
+          terrainExag={terrainExag}
+          deformExag={deformExag}
+          elevMin={base?.elevMin ?? 0}
+          elevMax={base?.elevMax ?? 0}
+          stats={terrain?.stats ?? null}
+          widthKm={frame.widthM / 1000}
+          heightKm={frame.heightM / 1000}
+          dem={dem}
+          imagery={imagery}
+          useSat={useSat}
+          refDate={disp?.reference_date ?? null}
+          curDate={curDate}
+        />
+      )}
+
+      {(demLoading || imgLoading || (deformActive && dispLoading)) && (
         <div className="map-loading">
-          {demLoading ? "Loading terrain…" : "Loading displacement…"}
+          {deformActive && dispLoading
+            ? "Loading displacement…"
+            : demLoading
+              ? "Loading terrain…"
+              : "Loading imagery…"}
         </div>
       )}
 
-      {dem && !dem.ok && (
+      {satFailed && (
         <div className="deck-hint">
-          Terrain tiles unavailable — showing deformation on a flat base.
+          Satellite imagery unavailable here — terrain is coloured by deformation instead.
         </div>
       )}
 
       {overlayMessage && <div className="map-overlay-message">{overlayMessage}</div>}
 
-      {showTimeline && (
-        <DateSlider dates={disp.dates} idx={dateIdx} onIdx={onDateIdx} />
-      )}
+      {showTimeline && <DateSlider dates={disp!.dates} idx={dateIdx} onIdx={onDateIdx} />}
     </div>
   );
 }
