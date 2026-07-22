@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -389,42 +390,96 @@ export default function Scene3D({
   }, [base, nodeVal, lut, terrainExag, deformExag, deformActive]);
 
   const useSat = mapTexture === "satellite";
-  const texture = useSat && imagery && imagery.ok ? imagery.canvas : undefined;
+  // `null` (not undefined) is deck's "no texture" sentinel; passing undefined
+  // crashes its async-texture path. Until imagery loads the terrain falls back
+  // to its deformation-coloured body.
+  const texture = useSat && imagery && imagery.ok ? imagery.image : null;
   const geomKey = `${boundsKey}|${grid?.count ?? 0}|${dem?.zoom ?? "flat"}|${dem?.ok}`;
   const alpha = Math.round(opacity * 255);
+
+  // Pick the nearest visible cell from a clicked map coordinate, so time-series
+  // selection works by clicking the draped terrain (no discs required).
+  const cellPick = useMemo(() => {
+    if (!grid) return null;
+    const nLon = grid.lon.length;
+    const map = new Map<number, number>();
+    const { i, j } = grid.cells;
+    for (const k of visibleIdx) map.set(i[k] * nLon + j[k], k);
+    return { map, nLon, lat: grid.lat, lon: grid.lon };
+  }, [grid, visibleIdx]);
+
+  const pickAt = useCallback(
+    (lng: number, latC: number) => {
+      if (!cellPick) return;
+      const { map, nLon, lat, lon } = cellPick;
+      const dLat = lat.length > 1 ? lat[1] - lat[0] : 1e-4;
+      const dLon = lon.length > 1 ? lon[1] - lon[0] : 1e-4;
+      const i = Math.round((latC - lat[0]) / dLat);
+      const j = Math.round((lng - lon[0]) / dLon);
+      if (i < 0 || i >= lat.length || j < 0 || j >= lon.length) return;
+      if (Math.abs(latC - lat[i]) > Math.abs(dLat) / 2) return;
+      if (Math.abs(lng - lon[j]) > Math.abs(dLon) / 2) return;
+      const k = map.get(i * nLon + j);
+      if (k !== undefined) onPickCell(k);
+    },
+    [cellPick, onPickCell],
+  );
 
   const layers = useMemo(() => {
     const result: Layer[] = [];
     if (!showData || !bounds || !frame || !base || !terrain) return result;
 
-    // The terrain IS the map: one mesh, DEM + deformation, satellite-draped.
+    const { i, j } = grid!.cells;
+    const origin: [number, number, number] = [frame.centerLon, frame.centerLat, 0];
+    // Lift the drape/markers a hair above the terrain to avoid z-fighting.
+    const lift = Math.max(2.5, (base.elevMax - base.elevMin) * terrainExag * 0.008);
+    const zOf = (k: number): number => {
+      const e = base.elevByCell[k];
+      const baseZ = (Number.isFinite(e) ? e : 0) * terrainExag;
+      if (!deformActive) return baseZ;
+      const v = valueOf(k);
+      return v == null ? baseZ : baseZ + (v / 1000) * deformExag;
+    };
+
+    // The terrain IS the map: one mesh, DEM + deformation, satellite-draped
+    // (or coloured by deformation when the satellite drape is off).
     result.push(
       new SimpleMeshLayer({
         id: "terrain",
         data: ONE,
         mesh: terrain.mesh,
-        texture,
-        getPosition: () => [frame.centerLon, frame.centerLat, 0],
+        // Only set texture when we actually have one; omitting the prop lets
+        // deck use its default (no texture) and show the mesh's vertex colours.
+        ...(texture ? { texture } : {}),
+        getPosition: () => origin,
         getColor: [255, 255, 255, 255],
         material: false,
         opacity,
-        pickable: false,
+        pickable: true,
       }),
     );
 
-    // Clickable data points, riding on the same surface heights.
-    if (showPoints && visibleIdx.length > 0) {
-      const { i, j } = grid!.cells;
-      const origin: [number, number, number] = [frame.centerLon, frame.centerLat, 0];
-      const zOf = (k: number): number => {
-        const e = base.elevByCell[k];
-        const baseZ = (Number.isFinite(e) ? e : 0) * terrainExag;
-        if (!deformActive) return baseZ;
-        const v = valueOf(k);
-        return v == null ? baseZ : baseZ + (v / 1000) * deformExag;
-      };
+    // Deformation drape: a connected skin using the exact terrain geometry, so
+    // it hugs and follows the ground. Only over the satellite terrain — in
+    // deformation mode the terrain body itself already carries the colour.
+    if (useSat) {
+      result.push(
+        new SimpleMeshLayer({
+          id: "deform-skin",
+          data: ONE,
+          mesh: terrain.skin,
+          getPosition: () => origin,
+          getColor: [255, 255, 255, 255],
+          getTranslation: [0, 0, lift],
+          material: false,
+          opacity,
+          pickable: true,
+        }),
+      );
+    }
 
-      // Flat billboarded discs (face the camera, constant on-screen size).
+    // Optional discrete markers (flat billboarded discs), off by default.
+    if (showPoints && visibleIdx.length > 0) {
       result.push(
         new ScatterplotLayer<number>({
           id: "points",
@@ -432,14 +487,13 @@ export default function Scene3D({
           coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
           coordinateOrigin: origin,
           billboard: true,
-          getPosition: (k: number) => [frame.east[j[k]], frame.north[i[k]], zOf(k) + 1],
+          getPosition: (k: number) => [frame.east[j[k]], frame.north[i[k]], zOf(k) + lift + 1],
           getFillColor: (k: number): [number, number, number, number] => {
             const v = valueOf(k);
             if (v == null) return [0, 0, 0, 0];
             const b = lutBin(lut, v);
             return [lut.r[b], lut.g[b], lut.b[b], alpha];
           },
-          // Hairline dark edge so discs stay legible over any terrain colour.
           stroked: true,
           getLineColor: [12, 14, 18, Math.round(alpha * 0.5)],
           lineWidthUnits: "pixels",
@@ -457,42 +511,43 @@ export default function Scene3D({
           },
         }),
       );
+    }
 
-      if (selected) {
-        const sk = grid!.cells.i.findIndex(
-          (ii, k) => ii === selected.i && grid!.cells.j[k] === selected.j,
-        );
-        if (sk >= 0) {
-          const selPos = (k: number): [number, number, number] => [
-            frame.east[j[k]],
-            frame.north[i[k]],
-            zOf(k) + 1,
-          ];
-          const ringTrigger = [geomKey, dateIdx, deformExag, terrainExag, deformActive, selected.i, selected.j];
-          const ring = (id: string, color: [number, number, number, number], width: number) =>
-            new ScatterplotLayer<number>({
-              id,
-              data: [sk],
-              coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
-              coordinateOrigin: origin,
-              billboard: true,
-              getPosition: selPos,
-              filled: false,
-              stroked: true,
-              getLineColor: color,
-              lineWidthUnits: "pixels",
-              getLineWidth: width,
-              lineWidthMinPixels: width,
-              radiusUnits: "pixels",
-              getRadius: pointSize3d + 2.5,
-              radiusMinPixels: 3,
-              radiusMaxPixels: 34,
-              updateTriggers: { getPosition: ringTrigger },
-            });
-          // Subtle outline: dark halo under a thin white ring, same footprint.
-          result.push(ring("points-sel-halo", [0, 0, 0, 170], 3));
-          result.push(ring("points-sel-ring", [255, 255, 255, 235], 1.5));
-        }
+    // Selection: a subtle outline ring at the cell's footprint (always shown
+    // when a cell is picked, whether or not discs are on).
+    if (selected) {
+      const sk = grid!.cells.i.findIndex(
+        (ii, k) => ii === selected.i && grid!.cells.j[k] === selected.j,
+      );
+      if (sk >= 0) {
+        const selPos = (k: number): [number, number, number] => [
+          frame.east[j[k]],
+          frame.north[i[k]],
+          zOf(k) + lift + 1,
+        ];
+        const ringTrigger = [geomKey, dateIdx, deformExag, terrainExag, deformActive, selected.i, selected.j];
+        const ring = (id: string, color: [number, number, number, number], width: number) =>
+          new ScatterplotLayer<number>({
+            id,
+            data: [sk],
+            coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
+            coordinateOrigin: origin,
+            billboard: true,
+            getPosition: selPos,
+            filled: false,
+            stroked: true,
+            getLineColor: color,
+            lineWidthUnits: "pixels",
+            getLineWidth: width,
+            lineWidthMinPixels: width,
+            radiusUnits: "pixels",
+            getRadius: pointSize3d + 2.5,
+            radiusMinPixels: 3,
+            radiusMaxPixels: 34,
+            updateTriggers: { getPosition: ringTrigger },
+          });
+        result.push(ring("points-sel-halo", [0, 0, 0, 170], 3));
+        result.push(ring("points-sel-ring", [255, 255, 255, 235], 1.5));
       }
     }
 
@@ -505,6 +560,7 @@ export default function Scene3D({
     base,
     terrain,
     texture,
+    useSat,
     opacity,
     geomKey,
     grid,
@@ -554,6 +610,9 @@ export default function Scene3D({
         onClick={(info: PickingInfo) => {
           if (info.layer?.id === "points" && typeof info.object === "number") {
             onPickCell(info.object);
+          } else if (info.coordinate && info.coordinate.length >= 2) {
+            // Clicked the draped terrain — resolve to the nearest data cell.
+            pickAt(info.coordinate[0], info.coordinate[1]);
           }
         }}
       />

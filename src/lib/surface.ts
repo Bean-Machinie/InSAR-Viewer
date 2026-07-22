@@ -71,7 +71,10 @@ export interface TerrainBase {
   elev: Float32Array;
   /** texture uv per node. */
   tex: Float32Array;
+  /** continuous triangulation over the whole grid (the terrain body). */
   indices: Uint32Array;
+  /** triangulation over quads whose 4 corners all have data (the drape). */
+  skinIndices: Uint32Array;
   /** grid cell index (i*nLon + j) per node, for deformation lookup. */
   cellId: Int32Array;
   /** real elevation (raw metres) per grid cell k; NaN if not sampled. */
@@ -114,6 +117,13 @@ export function buildTerrainBase(
   const elev = new Float32Array(nR * nC);
   const texUV = new Float32Array(nR * nC * 2);
   const cellId = new Int32Array(nR * nC);
+  const validNode = new Uint8Array(nR * nC); // node has data (visible cell)?
+
+  const visibleSet = new Set<number>();
+  {
+    const { i: ci0, j: cj0 } = grid.cells;
+    for (const k of visibleIdx) visibleSet.add(ci0[k] * nLon + cj0[k]);
+  }
 
   const mPerDegLon = 111320 * Math.cos(((grid.lat[0] + grid.lat[nLat - 1]) / 2) * Math.PI / 180);
   const centerLat = (grid.lat[0] + grid.lat[nLat - 1]) / 2;
@@ -144,11 +154,17 @@ export function buildTerrainBase(
       texUV[p * 2] = (webMercX(lon) - uW) / uSpan;
       texUV[p * 2 + 1] = (webMercY(lat) - vN) / vSpan;
       cellId[p] = i * nLon + j;
+      validNode[p] = visibleSet.has(i * nLon + j) ? 1 : 0;
     }
   }
 
-  // Continuous triangulation over the whole strided grid.
+  // Two triangulations sharing the same vertices:
+  //  - `tris`: continuous, the terrain body (satellite drapes over all of it).
+  //  - `skinTris`: only quads whose 4 corners all have data, so the deformation
+  //    drape has real holes over no-data cells and the satellite shows through
+  //    (a fully-continuous transparent skin renders those cells as black).
   const tris: number[] = [];
+  const skinTris: number[] = [];
   for (let r = 0; r < nR - 1; r++) {
     for (let c = 0; c < nC - 1; c++) {
       const a = r * nC + c;
@@ -156,6 +172,9 @@ export function buildTerrainBase(
       const d = (r + 1) * nC + c;
       const e = (r + 1) * nC + c + 1;
       tris.push(a, d, b, b, d, e);
+      if (validNode[a] && validNode[b] && validNode[d] && validNode[e]) {
+        skinTris.push(a, d, b, b, d, e);
+      }
     }
   }
 
@@ -175,6 +194,7 @@ export function buildTerrainBase(
     elev,
     tex: texUV,
     indices: Uint32Array.from(tris),
+    skinIndices: Uint32Array.from(skinTris),
     cellId,
     elevByCell,
     elevMin: Number.isFinite(elevMin) ? elevMin : 0,
@@ -214,11 +234,16 @@ export function buildTerrainMesh(
   terrainExag: number,
   deformExag: number,
   deformActive: boolean,
-): { mesh: TerrainMesh; stats: SurfaceStats } {
+): { mesh: TerrainMesh; skin: TerrainMesh; stats: SurfaceStats } {
   const nNode = base.nR * base.nC;
   const positions = new Float32Array(nNode * 3);
   const normals = new Float32Array(nNode * 3);
+  // `colors`: terrain body colour (deformation where data, neutral elsewhere),
+  // used when the terrain itself is coloured (deformation texture mode).
+  // `skin`: deformation colour where data, TRANSPARENT elsewhere, for the
+  // drape that hugs the satellite terrain.
   const colors = new Uint8Array(nNode * 4);
+  const skin = new Uint8Array(nNode * 4);
 
   let defMin = Infinity;
   let defMax = -Infinity;
@@ -235,10 +260,11 @@ export function buildTerrainMesh(
     if (Number.isFinite(v)) {
       if (deformActive) z += (v / 1000) * deformExag;
       const b = lutBin(lut, v);
-      colors[o] = lut.r[b];
-      colors[o + 1] = lut.g[b];
-      colors[o + 2] = lut.b[b];
+      colors[o] = skin[o] = lut.r[b];
+      colors[o + 1] = skin[o + 1] = lut.g[b];
+      colors[o + 2] = skin[o + 2] = lut.b[b];
       colors[o + 3] = 255;
+      skin[o + 3] = 255;
       if (v < defMin) defMin = v;
       if (v > defMax) defMax = v;
       const a = Math.abs(v);
@@ -249,20 +275,27 @@ export function buildTerrainMesh(
       colors[o + 1] = NEUTRAL[1];
       colors[o + 2] = NEUTRAL[2];
       colors[o + 3] = 255;
+      // skin stays 0,0,0,0 → transparent, so the satellite shows through.
     }
     positions[q + 2] = z;
     normals[q + 2] = 1;
   }
 
+  const geom = {
+    POSITION: { value: positions, size: 3 },
+    NORMAL: { value: normals, size: 3 },
+    TEXCOORD_0: { value: base.tex, size: 2 },
+  };
+
   return {
     mesh: {
-      attributes: {
-        POSITION: { value: positions, size: 3 },
-        NORMAL: { value: normals, size: 3 },
-        TEXCOORD_0: { value: base.tex, size: 2 },
-        COLOR_0: { value: colors, size: 4, normalized: true },
-      },
+      attributes: { ...geom, COLOR_0: { value: colors, size: 4, normalized: true } },
       indices: { value: base.indices, size: 1 },
+    },
+    skin: {
+      attributes: { ...geom, COLOR_0: { value: skin, size: 4, normalized: true } },
+      // data-only triangulation → real holes where there's no data.
+      indices: { value: base.skinIndices, size: 1 },
     },
     stats: {
       defMin: Number.isFinite(defMin) ? defMin : 0,

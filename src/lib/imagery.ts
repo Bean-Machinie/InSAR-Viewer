@@ -21,8 +21,9 @@ const OSM = (z: number, x: number, y: number) =>
   `https://a.tile.openstreetmap.org/${z}/${x}/${y}.png`;
 
 export interface Imagery {
-  canvas: HTMLCanvasElement;
-  /** Tile-aligned geographic extent of the stitched canvas. */
+  /** Stitched imagery as an ImageBitmap (deck.gl's supported texture source). */
+  image: ImageBitmap;
+  /** Tile-aligned geographic extent of the stitched imagery. */
   west: number;
   east: number;
   north: number;
@@ -111,8 +112,12 @@ export async function loadImagery(
       }),
     );
 
+    // ImageBitmap is the texture source deck.gl/luma handle reliably (a raw
+    // canvas trips their createTexture path). Orientation is preserved.
+    const image = await createImageBitmap(canvas);
+
     return {
-      canvas,
+      image,
       west: tileX2lon(tx0, z),
       east: tileX2lon(tx1 + 1, z),
       north: tileY2lat(ty0, z),

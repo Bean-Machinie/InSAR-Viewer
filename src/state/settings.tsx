@@ -59,7 +59,7 @@ const DEFAULTS: DisplaySettings = {
   terrainExag: 1.5,
   pointSize3d: 3,
   mapTexture: "satellite",
-  showPoints: true,
+  showPoints: false,
 };
 
 const COLOR_BYS: readonly ColorBy[] = ["vel", "coh", "rmse", "disp"];
