@@ -6,7 +6,7 @@ import {
   type SetStateAction,
 } from "react";
 import DeckGL from "@deck.gl/react";
-import { PointCloudLayer } from "@deck.gl/layers";
+import { ScatterplotLayer } from "@deck.gl/layers";
 import { SimpleMeshLayer } from "@deck.gl/mesh-layers";
 import {
   COORDINATE_SYSTEM,
@@ -424,26 +424,36 @@ export default function Scene3D({
         return v == null ? baseZ : baseZ + (v / 1000) * deformExag;
       };
 
+      // Flat billboarded discs (face the camera, constant on-screen size).
       result.push(
-        new PointCloudLayer<number>({
+        new ScatterplotLayer<number>({
           id: "points",
           data: visibleIdx,
           coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
           coordinateOrigin: origin,
+          billboard: true,
           getPosition: (k: number) => [frame.east[j[k]], frame.north[i[k]], zOf(k) + 1],
-          getColor: (k: number): [number, number, number, number] => {
+          getFillColor: (k: number): [number, number, number, number] => {
             const v = valueOf(k);
             if (v == null) return [0, 0, 0, 0];
             const b = lutBin(lut, v);
             return [lut.r[b], lut.g[b], lut.b[b], alpha];
           },
-          pointSize: pointSize3d,
-          sizeUnits: "pixels",
+          // Hairline dark edge so discs stay legible over any terrain colour.
+          stroked: true,
+          getLineColor: [12, 14, 18, Math.round(alpha * 0.5)],
+          lineWidthUnits: "pixels",
+          getLineWidth: 0.5,
+          lineWidthMinPixels: 0.5,
+          radiusUnits: "pixels",
+          getRadius: pointSize3d,
+          radiusMinPixels: 1.5,
+          radiusMaxPixels: 32,
           pickable: true,
-          material: false,
           updateTriggers: {
             getPosition: [geomKey, dateIdx, deformExag, terrainExag, deformActive],
-            getColor: [geomKey, dateIdx, cmapId, domain.min, domain.max, alpha, colorBy],
+            getFillColor: [geomKey, dateIdx, cmapId, domain.min, domain.max, alpha, colorBy],
+            getLineColor: [alpha],
           },
         }),
       );
@@ -453,22 +463,35 @@ export default function Scene3D({
           (ii, k) => ii === selected.i && grid!.cells.j[k] === selected.j,
         );
         if (sk >= 0) {
-          result.push(
-            new PointCloudLayer<number>({
-              id: "points-selected",
+          const selPos = (k: number): [number, number, number] => [
+            frame.east[j[k]],
+            frame.north[i[k]],
+            zOf(k) + 1,
+          ];
+          const ringTrigger = [geomKey, dateIdx, deformExag, terrainExag, deformActive, selected.i, selected.j];
+          const ring = (id: string, color: [number, number, number, number], width: number) =>
+            new ScatterplotLayer<number>({
+              id,
               data: [sk],
               coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
               coordinateOrigin: origin,
-              getPosition: (k: number) => [frame.east[j[k]], frame.north[i[k]], zOf(k) + 4],
-              getColor: [255, 255, 255, 255],
-              pointSize: pointSize3d + 5,
-              sizeUnits: "pixels",
-              material: false,
-              updateTriggers: {
-                getPosition: [geomKey, dateIdx, deformExag, terrainExag, deformActive, selected.i, selected.j],
-              },
-            }),
-          );
+              billboard: true,
+              getPosition: selPos,
+              filled: false,
+              stroked: true,
+              getLineColor: color,
+              lineWidthUnits: "pixels",
+              getLineWidth: width,
+              lineWidthMinPixels: width,
+              radiusUnits: "pixels",
+              getRadius: pointSize3d + 2.5,
+              radiusMinPixels: 3,
+              radiusMaxPixels: 34,
+              updateTriggers: { getPosition: ringTrigger },
+            });
+          // Subtle outline: dark halo under a thin white ring, same footprint.
+          result.push(ring("points-sel-halo", [0, 0, 0, 170], 3));
+          result.push(ring("points-sel-ring", [255, 255, 255, 235], 1.5));
         }
       }
     }
