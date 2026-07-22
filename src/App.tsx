@@ -7,7 +7,6 @@ import type {
   ProjectSummary,
   TimeseriesResponse,
 } from "./api/types";
-import { colorFor } from "./lib/colormaps";
 import { computeDomain, percentile } from "./lib/stats";
 import { useSettings } from "./state/settings";
 import MapView from "./components/MapView";
@@ -18,7 +17,6 @@ export default function App() {
   // Display settings (colorBy, colormap, clip, shape, …) live in context
   const { settings } = useSettings();
   const { colorBy, clipPct, showData } = settings;
-  const cmapId = settings.colormap[colorBy];
 
   // Projects
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -233,22 +231,22 @@ export default function App() {
     return computeDomain(values, colorBy === "vel", clipPct);
   }, [grid, visibleIdx, colorBy, clipPct, disp]);
 
-  const colorOf = useMemo(() => {
-    if (!grid) return () => "#000";
+  // Raw value of the active layer per cell (null → transparent). Colours are
+  // resolved in GridLayer via a precomputed LUT — passing values instead of
+  // colour strings keeps the hot render path allocation-free.
+  const valueOf = useMemo<(k: number) => number | null>(() => {
+    if (!grid) return () => null;
     // Displacement at the currently-selected epoch; null pixels (NaN that
     // date) draw transparent. Domain stays pinned to the final epoch above.
     if (colorBy === "disp") {
       const row = disp?.cells.disp[dateIdx];
-      if (!row) return () => "rgba(0,0,0,0)";
-      return (k: number) => {
-        const v = row[k];
-        return v == null ? "rgba(0,0,0,0)" : colorFor(v, domain, cmapId);
-      };
+      if (!row) return () => null;
+      return (k: number) => row[k] ?? null;
     }
     const vals = grid.cells[colorBy];
-    if (!vals) return () => "#000";
-    return (k: number) => colorFor(vals[k], domain, cmapId);
-  }, [grid, colorBy, cmapId, domain, disp, dateIdx]);
+    if (!vals) return () => null;
+    return (k: number) => vals[k];
+  }, [grid, colorBy, disp, dateIdx]);
 
   // Exact-cell click → time series at that cell's centre coordinates
   const onPickCell = useCallback(
@@ -311,7 +309,7 @@ export default function App() {
           bounds={detail?.bounds ?? null}
           grid={grid}
           visibleIdx={visibleIdx}
-          colorOf={colorOf}
+          valueOf={valueOf}
           domain={domain}
           selected={selectedCell}
           onPickCell={onPickCell}

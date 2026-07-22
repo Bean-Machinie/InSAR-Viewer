@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef } from "react";
 import L from "leaflet";
 import { useMap } from "react-leaflet";
 import type { GridResponse } from "../api/types";
+import type { Domain } from "../lib/stats";
+import { buildLut, lutBin, type ColorLut } from "../lib/colormaps";
 import { SHAPES, SHAPE_MIN_PX, pointInVerts, type PixelShape } from "../lib/shapes";
 import { useSettings } from "../state/settings";
 
@@ -9,7 +11,9 @@ interface Props {
   grid: GridResponse | null;
   /** Indices into grid.cells.* that pass the current filters. */
   visibleIdx: number[];
-  colorOf: (cellIdx: number) => string;
+  /** Value of the active layer for a cell; null draws transparent. */
+  valueOf: (cellIdx: number) => number | null;
+  domain: Domain;
   selected: { i: number; j: number } | null;
   onPickCell: (cellIdx: number) => void;
 }
@@ -26,17 +30,33 @@ function edges(c: number[]): number[] {
   return e;
 }
 
+/** Below this cell size (px), square cells render via the ImageData fast
+ *  path: the ±0.5 px column jitter of nearest-neighbour scaling is invisible,
+ *  and it is orders of magnitude faster than per-cell fillRect. */
+const FAST_PATH_MAX_PX = 8;
+
 /**
  * Pixel-strict grid rendering. Every cell is drawn as a rectangle whose
  * corners are the *projected NetCDF cell edges*, recomputed on every
  * pan/zoom and rounded to whole screen pixels. Adjacent cells share the
  * exact same rounded edge, so cells never smear, elongate, or drift the
  * way a CSS-scaled image overlay does.
+ *
+ * Performance model (what keeps sliders smooth):
+ *  - colours come from a 256-bin LUT (no rgb() string building per cell);
+ *  - small square cells take a fast path: cell colours are painted once
+ *    into an offscreen nLon×nLat ImageData buffer (rebuilt only when
+ *    data / filter / colours change — NOT on pan/zoom), then blitted
+ *    row-by-row so each grid row still lands exactly on its projected,
+ *    rounded edge;
+ *  - all redraw triggers are coalesced through requestAnimationFrame, so
+ *    a burst of slider events costs at most one redraw per frame.
  */
 export default function GridLayer({
   grid,
   visibleIdx,
-  colorOf,
+  valueOf,
+  domain,
   selected,
   onPickCell,
 }: Props) {
@@ -44,17 +64,31 @@ export default function GridLayer({
   const { settings } = useSettings();
   const pixelShape: PixelShape = settings.pixelShape;
   const opacity = settings.opacity;
+  const cmapId = settings.colormap[settings.colorBy];
+
+  const lut = useMemo(() => buildLut(cmapId, domain), [cmapId, domain]);
+
   const stateRef = useRef({
     grid,
     visibleIdx,
-    colorOf,
+    valueOf,
+    lut,
     selected,
     onPickCell,
     pixelShape,
     opacity,
   });
-  stateRef.current = { grid, visibleIdx, colorOf, selected, onPickCell, pixelShape, opacity };
-  const redrawRef = useRef<() => void>(() => {});
+  stateRef.current = {
+    grid,
+    visibleIdx,
+    valueOf,
+    lut,
+    selected,
+    onPickCell,
+    pixelShape,
+    opacity,
+  };
+  const scheduleRef = useRef<() => void>(() => {});
 
   // Fast lookups derived once per grid: cell index by (i,j), visibility set
   const cellByIJ = useMemo(() => {
@@ -70,6 +104,16 @@ export default function GridLayer({
   const lookupRef = useRef({ cellByIJ, visibleSet });
   lookupRef.current = { cellByIJ, visibleSet };
 
+  // Offscreen colour buffer for the fast path, cached across redraws and
+  // invalidated only when the inputs that determine cell colours change.
+  const bufRef = useRef<{
+    canvas: HTMLCanvasElement;
+    grid: GridResponse;
+    visibleIdx: number[];
+    valueOf: (k: number) => number | null;
+    lut: ColorLut;
+  } | null>(null);
+
   useEffect(() => {
     const canvas = L.DomUtil.create(
       "canvas",
@@ -80,18 +124,21 @@ export default function GridLayer({
 
     const redraw = () => {
       const size = map.getSize();
-      canvas.width = size.x;
-      canvas.height = size.y;
-      L.DomUtil.setPosition(canvas, map.containerPointToLayerPoint([0, 0]));
-
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      ctx.clearRect(0, 0, size.x, size.y);
+      if (canvas.width !== size.x || canvas.height !== size.y) {
+        canvas.width = size.x; // resizing also clears
+        canvas.height = size.y;
+      } else {
+        ctx.clearRect(0, 0, size.x, size.y);
+      }
+      L.DomUtil.setPosition(canvas, map.containerPointToLayerPoint([0, 0]));
 
       const {
         grid: g,
         visibleIdx: vis,
-        colorOf: color,
+        valueOf: val,
+        lut: colorLut,
         selected: sel,
         pixelShape: shape,
         opacity: alpha,
@@ -112,6 +159,8 @@ export default function GridLayer({
       );
 
       const { i: ci, j: cj } = g.cells;
+      const nLat = g.lat.length;
+      const nLon = g.lon.length;
       // Non-square glyphs are invisible at tiny cell sizes — fall back to
       // plain rects there (also much faster for large grids).
       const cellW = Math.abs(X[1] - X[0]);
@@ -120,23 +169,93 @@ export default function GridLayer({
         shape !== "square" && Math.min(cellW, cellH) >= SHAPE_MIN_PX
           ? SHAPES[shape]
           : SHAPES.square;
+
       ctx.globalAlpha = alpha;
-      // rowOffset shapes shift odd rows +w/2, so widen the cull by one cell
-      for (const k of vis) {
-        const i = ci[k];
-        const j = cj[k];
-        const x = Math.min(X[j], X[j + 1]);
-        const w = Math.abs(X[j + 1] - X[j]);
-        const y = Math.min(Y[i], Y[i + 1]);
-        const h = Math.abs(Y[i + 1] - Y[i]);
-        if (x + 2 * w < 0 || x - w > size.x || y + 2 * h < 0 || y - h > size.y) continue;
-        ctx.fillStyle = color(k);
-        shapeDef.draw(ctx, x, y, Math.max(w, 1), Math.max(h, 1), i, j);
+
+      const useFastPath =
+        shapeDef === SHAPES.square &&
+        Math.min(cellW, cellH) <= FAST_PATH_MAX_PX;
+
+      if (useFastPath) {
+        // Rebuild the offscreen buffer only if colours/data changed since
+        // the last redraw; pan/zoom reuses it as-is.
+        let buf = bufRef.current;
+        if (
+          !buf ||
+          buf.grid !== g ||
+          buf.visibleIdx !== vis ||
+          buf.valueOf !== val ||
+          buf.lut !== colorLut
+        ) {
+          const off = buf?.canvas ?? document.createElement("canvas");
+          if (off.width !== nLon || off.height !== nLat) {
+            off.width = nLon;
+            off.height = nLat;
+          }
+          const octx = off.getContext("2d")!;
+          const img = octx.createImageData(nLon, nLat); // zero-initialised
+          const data = img.data;
+          // Mercator X grows with lon; mirror columns if lon is descending
+          // so buffer column 0 is always the leftmost on screen.
+          const flipCols = g.lon[nLon - 1] < g.lon[0];
+          const { r, g: gr, b } = colorLut;
+          for (const k of vis) {
+            const v = val(k);
+            if (v == null) continue;
+            const bin = lutBin(colorLut, v);
+            const col = flipCols ? nLon - 1 - cj[k] : cj[k];
+            const p = (ci[k] * nLon + col) * 4;
+            data[p] = r[bin];
+            data[p + 1] = gr[bin];
+            data[p + 2] = b[bin];
+            data[p + 3] = 255;
+          }
+          octx.putImageData(img, 0, 0);
+          buf = { canvas: off, grid: g, visibleIdx: vis, valueOf: val, lut: colorLut };
+          bufRef.current = buf;
+        }
+
+        // Blit one source row per grid row so every row lands exactly on
+        // its projected, rounded edge (Mercator rows are not equal-height).
+        const x0 = Math.min(X[0], X[nLon]);
+        const wTot = Math.max(Math.abs(X[nLon] - X[0]), 1);
+        if (x0 <= size.x && x0 + wTot >= 0) {
+          ctx.imageSmoothingEnabled = false;
+          for (let i = 0; i < nLat; i++) {
+            const y = Math.min(Y[i], Y[i + 1]);
+            const h = Math.max(Math.abs(Y[i + 1] - Y[i]), 1);
+            if (y > size.y || y + h < 0) continue;
+            ctx.drawImage(buf.canvas, 0, i, nLon, 1, x0, y, wTot, h);
+          }
+        }
+      } else {
+        // Pixel-strict per-cell path (large cells / fancy glyphs). The LUT
+        // keeps fillStyle churn low: identical consecutive bins skip the
+        // (surprisingly expensive) fillStyle string assignment.
+        let lastBin = -1;
+        for (const k of vis) {
+          const i = ci[k];
+          const j = cj[k];
+          const x = Math.min(X[j], X[j + 1]);
+          const w = Math.abs(X[j + 1] - X[j]);
+          const y = Math.min(Y[i], Y[i + 1]);
+          const h = Math.abs(Y[i + 1] - Y[i]);
+          // rowOffset shapes shift odd rows +w/2, so widen the cull by one cell
+          if (x + 2 * w < 0 || x - w > size.x || y + 2 * h < 0 || y - h > size.y) continue;
+          const v = val(k);
+          if (v == null) continue; // NaN at this epoch — transparent
+          const bin = lutBin(colorLut, v);
+          if (bin !== lastBin) {
+            ctx.fillStyle = colorLut.strings[bin];
+            lastBin = bin;
+          }
+          shapeDef.draw(ctx, x, y, Math.max(w, 1), Math.max(h, 1), i, j);
+        }
       }
       ctx.globalAlpha = 1;
 
       // Selected pixel: outline the exact glyph that was drawn for it
-      if (sel && sel.i >= 0 && sel.i < g.lat.length && sel.j >= 0 && sel.j < g.lon.length) {
+      if (sel && sel.i >= 0 && sel.i < nLat && sel.j >= 0 && sel.j < nLon) {
         const x = Math.min(X[sel.j], X[sel.j + 1]);
         const w = Math.abs(X[sel.j + 1] - X[sel.j]);
         const y = Math.min(Y[sel.i], Y[sel.i + 1]);
@@ -150,7 +269,18 @@ export default function GridLayer({
         ctx.stroke();
       }
     };
-    redrawRef.current = redraw;
+
+    // Coalesce redraw triggers: many events per frame (slider drags, map
+    // move+zoom) collapse into a single redraw on the next animation frame.
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        redraw();
+      });
+    };
+    scheduleRef.current = schedule;
 
     const onClick = (e: L.LeafletMouseEvent) => {
       const { grid: g, onPickCell: pick, pixelShape: shape } = stateRef.current;
@@ -216,22 +346,24 @@ export default function GridLayer({
       pickIfVisible(i0, j0);
     };
 
-    map.on("moveend zoomend viewreset resize", redraw);
+    map.on("moveend zoomend viewreset resize", schedule);
     map.on("click", onClick);
     redraw();
 
     return () => {
-      map.off("moveend zoomend viewreset resize", redraw);
+      map.off("moveend zoomend viewreset resize", schedule);
       map.off("click", onClick);
+      if (raf) cancelAnimationFrame(raf);
       canvas.remove();
-      redrawRef.current = () => {};
+      scheduleRef.current = () => {};
+      bufRef.current = null;
     };
   }, [map]);
 
   // Redraw when data, filters, colors, selection, or style change
   useEffect(() => {
-    redrawRef.current();
-  }, [grid, visibleIdx, colorOf, selected, pixelShape, opacity]);
+    scheduleRef.current();
+  }, [grid, visibleIdx, valueOf, lut, selected, pixelShape, opacity]);
 
   return null;
 }

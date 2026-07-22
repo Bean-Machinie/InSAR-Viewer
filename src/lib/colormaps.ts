@@ -121,13 +121,17 @@ function lerp(a: number, b: number, t: number): number {
 }
 
 /** Piecewise-linear ramp over evenly spaced RGB stops. t in [0, 1]. */
-function ramp(stops: RGB[], t: number): string {
+function rampRgb(stops: RGB[], t: number): RGB {
   const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
   const i = Math.min(stops.length - 2, Math.floor(x));
   const f = x - i;
   const [r1, g1, b1] = stops[i];
   const [r2, g2, b2] = stops[i + 1];
-  return `rgb(${Math.round(lerp(r1, r2, f))},${Math.round(lerp(g1, g2, f))},${Math.round(lerp(b1, b2, f))})`;
+  return [
+    Math.round(lerp(r1, r2, f)),
+    Math.round(lerp(g1, g2, f)),
+    Math.round(lerp(b1, b2, f)),
+  ];
 }
 
 function stopsOf(cmapId: string): RGB[] {
@@ -136,7 +140,56 @@ function stopsOf(cmapId: string): RGB[] {
 
 export function colorFor(value: number, domain: Domain, cmapId: string): string {
   const t = (value - domain.min) / (domain.max - domain.min);
-  return ramp(stopsOf(cmapId), t);
+  const [r, g, b] = rampRgb(stopsOf(cmapId), t);
+  return `rgb(${r},${g},${b})`;
+}
+
+/**
+ * Precomputed colour lookup table: quantises a domain into LUT_SIZE bins so
+ * the render loop never builds an `rgb(...)` string per cell. `strings` are
+ * shared CSS colours (canvas fillStyle can be dedup'd by identity); r/g/b
+ * are byte channels for writing straight into ImageData.
+ */
+export interface ColorLut {
+  strings: string[];
+  r: Uint8Array;
+  g: Uint8Array;
+  b: Uint8Array;
+  /** bin = clamp(round((v - min) * scale)) — see lutBin. */
+  min: number;
+  scale: number;
+}
+
+export const LUT_SIZE = 256;
+
+export function buildLut(cmapId: string, domain: Domain): ColorLut {
+  const stops = stopsOf(cmapId);
+  const strings = new Array<string>(LUT_SIZE);
+  const r = new Uint8Array(LUT_SIZE);
+  const g = new Uint8Array(LUT_SIZE);
+  const b = new Uint8Array(LUT_SIZE);
+  for (let k = 0; k < LUT_SIZE; k++) {
+    const [rr, gg, bb] = rampRgb(stops, k / (LUT_SIZE - 1));
+    r[k] = rr;
+    g[k] = gg;
+    b[k] = bb;
+    strings[k] = `rgb(${rr},${gg},${bb})`;
+  }
+  const span = domain.max - domain.min;
+  return {
+    strings,
+    r,
+    g,
+    b,
+    min: domain.min,
+    scale: span !== 0 ? (LUT_SIZE - 1) / span : 0,
+  };
+}
+
+/** Bin index of a value in a LUT (clamped to [0, LUT_SIZE-1]). */
+export function lutBin(lut: ColorLut, v: number): number {
+  const x = (v - lut.min) * lut.scale;
+  return x <= 0 ? 0 : x >= LUT_SIZE - 1 ? LUT_SIZE - 1 : Math.round(x);
 }
 
 /** CSS gradient string for legend bars and picker swatches. */

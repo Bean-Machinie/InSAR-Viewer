@@ -145,7 +145,8 @@ interface Props {
   bounds: Bounds | null;
   grid: GridResponse | null;
   visibleIdx: number[];
-  colorOf: (cellIdx: number) => string;
+  /** Raw layer value per cell (null → transparent); colours resolve in GridLayer. */
+  valueOf: (cellIdx: number) => number | null;
   domain: Domain;
   selected: { i: number; j: number } | null;
   onPickCell: (cellIdx: number) => void;
@@ -162,7 +163,7 @@ export default function MapView({
   bounds,
   grid,
   visibleIdx,
-  colorOf,
+  valueOf,
   domain,
   selected,
   onPickCell,
@@ -188,7 +189,8 @@ export default function MapView({
           <GridLayer
             grid={grid}
             visibleIdx={visibleIdx}
-            colorOf={colorOf}
+            valueOf={valueOf}
+            domain={domain}
             selected={selected}
             onPickCell={onPickCell}
           />
