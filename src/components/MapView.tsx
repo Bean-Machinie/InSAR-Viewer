@@ -1,8 +1,9 @@
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import type { Bounds, GridResponse } from "../api/types";
 import type { Domain } from "../lib/stats";
 import { useSettings } from "../state/settings";
+import { useSceneCapture } from "../lib/capture";
 import { BaseMapPicker, ColorByPicker, ShowDataToggle, ViewModePicker } from "./controls";
 import GridLayer from "./GridLayer";
 import Legend from "./Legend";
@@ -32,7 +33,19 @@ function FitBounds({ bounds }: { bounds: Bounds | null }) {
 }
 
 /** Top-right map control: quick view toggles. Styling lives in the sidebar. */
-function MapControls({ hasData }: { hasData: boolean }) {
+function MapControls({
+  hasData,
+  recording,
+  busy,
+  onSaveImage,
+  onToggleRecording,
+}: {
+  hasData: boolean;
+  recording: boolean;
+  busy: boolean;
+  onSaveImage: () => void;
+  onToggleRecording: () => void;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -77,6 +90,22 @@ function MapControls({ hasData }: { hasData: boolean }) {
               </div>
             </>
           )}
+          <div className="map-ctl-sep" />
+          <div className="map-ctl-title">Capture</div>
+          <div className="capture-row">
+            <button className="capture-btn" onClick={onSaveImage} disabled={busy}>
+              {busy ? "Saving…" : "Save image"}
+            </button>
+            <button
+              className={recording ? "capture-btn rec active" : "capture-btn rec"}
+              onClick={onToggleRecording}
+            >
+              {recording ? "■ Stop" : "● Record"}
+            </button>
+          </div>
+          <div className="capture-note">
+            Captures the map and its panels (not this control box).
+          </div>
         </div>
       )}
     </div>
@@ -118,13 +147,27 @@ export default function MapView({
 }: Props) {
   const { settings } = useSettings();
   const dispActive = settings.colorBy === "disp";
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const capture = useSceneCapture(wrapRef, "dom");
   return (
-    <div className="map-wrap">
+    <div className="map-wrap" ref={wrapRef}>
       <MapContainer center={[55.68, 12.45]} zoom={11} className="map" zoomControl>
         {settings.baseMap === "esri" ? (
-          <TileLayer key="esri" url={ESRI_URL} attribution={ESRI_ATTR} maxZoom={19} />
+          <TileLayer
+            key="esri"
+            url={ESRI_URL}
+            attribution={ESRI_ATTR}
+            maxZoom={19}
+            crossOrigin="anonymous"
+          />
         ) : (
-          <TileLayer key="osm" url={OSM_URL} attribution={OSM_ATTR} maxZoom={19} />
+          <TileLayer
+            key="osm"
+            url={OSM_URL}
+            attribution={OSM_ATTR}
+            maxZoom={19}
+            crossOrigin="anonymous"
+          />
         )}
         <FitBounds bounds={bounds} />
         {settings.showData && (
@@ -138,7 +181,13 @@ export default function MapView({
           />
         )}
       </MapContainer>
-      <MapControls hasData={grid !== null} />
+      <MapControls
+        hasData={grid !== null}
+        recording={capture.recording}
+        busy={capture.busy}
+        onSaveImage={capture.saveImage}
+        onToggleRecording={capture.toggleRecording}
+      />
       {settings.showData && grid !== null && visibleIdx.length > 0 && (
         <Legend domain={domain} />
       )}
